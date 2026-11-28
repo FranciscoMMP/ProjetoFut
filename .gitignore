@@ -1,0 +1,11 @@
+# Segredos: nunca versionar
+.env
+.env.*
+
+# Pastas ignoradas
+Claude outputs/
+revisao-elencos/
+
+# Python
+__pycache__/
+*.pyc

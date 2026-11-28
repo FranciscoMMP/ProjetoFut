@@ -2,18 +2,19 @@ import { Aparencia, Cores, Sprites, Visual, desenharJogador } from './render-spr
 import { Rnd, Gen } from './motor-campo.js';
 import { Som } from './audio.js';
 import { game, openMenu } from './main.js';
+import { Tatica, Painel } from './tatica.js';
 
 /* =============================================================================
    MODO CAMPEONATO BRASILEIRO SÉRIE A (OFFLINE, 38 RODADAS)
    Tudo aqui é DADOS e REGRAS: não toca na física, nos controles, na IA da zaga nem nos sprites.
      Clubes    : identidade visual (sigla, cores e padrão do uniforme) de cada clube.
      Dados     : carrega brasileirao2026.json (fetch; guarda cópia no localStorage; aceita arquivo escolhido à mão).
-     Elenco    : monta os 11 titulares ("titular": true) de cada clube na formação 4-3-3, calcula ataque/defesa/overall,
-                 converte os atributos do elenco nos atributos do jogo (game.attr) e veste os bonecos com o uniforme do clube.
+     Elenco    : monta o elenco completo de cada clube (tamanho livre) e a escalação na formação (vagas em tatica.js),
+                 converte os atributos EFETIVOS (energia + improviso) nos atributos do jogo (game.attr) e veste os bonecos.
      Sim       : simula as partidas entre bots (Poisson por força de ataque x defesa) com autores dos gols.
-     Liga      : calendário turno e returno (método do círculo), tabela, artilharia e persistência em localStorage.
-     Ctx       : sorteia nomes reais dos titulares para a narração.
-     Narracao  : bancos de frases do minuto a minuto, com {fichas} trocadas por nomes reais.
+     Liga      : calendário turno e returno (método do círculo), tabela, artilharia e persistência em localStorage
+                 (inclui o estado tático do seu clube: formação, postura, titulares e energia de cada jogador).
+   Sistema tático (fôlego, energia, formações, postura, improviso e substituições): tatica.js.
    ============================================================================= */
 
 /* ------------------------------ Identidade dos clubes ------------------------------ */
@@ -99,25 +100,12 @@ const Dados = {
 
 /* ----------------------------------- Elenco ----------------------------------- */
 /**
- * Escalação fixa em 4-3-3 com os 11 titulares do JSON (sem mercado nem trocas). Cada titular ocupa um "slot" da formação
- * da Etapa 5 (chave = função + lado, ex.: 'LB|-0.85'); é por essa chave que o cenário de cada lance encontra o jogador real.
+ * Cada clube tem o ELENCO completo do JSON e uma escalação de 11 nas vagas da formação (tatica.js). Cada titular ocupa um
+ * "slot" da formação (chave = função + lado, ex.: 'LB|-0.85'); é por essa chave que o cenário de cada lance encontra o jogador real.
+ * Bots jogam sempre no 4-3-3 com os 11 titulares do JSON; o seu clube usa a escalação salva em Tática & Elenco.
  */
 const Elenco = {
   FORM: '4-3-3',
-  /** Ordem de preenchimento dos slots: [chave, grupo preferido, critério de desempate, camisa]. */
-  ORDEM: [
-    ['GK|0',     'GOL', (a, b) => b.ovr - a.ovr, 1],
-    ['LB|-0.85', 'DEF', (a, b) => b.velocidade - a.velocidade, 3],
-    ['RB|0.85',  'DEF', (a, b) => b.velocidade - a.velocidade, 2],
-    ['CB|-0.3',  'DEF', (a, b) => b.marcacao - a.marcacao, 4],
-    ['CB|0.3',   'DEF', (a, b) => b.marcacao - a.marcacao, 5],
-    ['DM|0',     'MEI', (a, b) => b.marcacao - a.marcacao, 6],
-    ['CM|0.4',   'MEI', (a, b) => b.ovr - a.ovr, 10],
-    ['CM|-0.4',  'MEI', (a, b) => b.ovr - a.ovr, 8],
-    ['ST|0',     'ATA', (a, b) => (b.forca + b.posicionamento + b.ovr) - (a.forca + a.posicionamento + a.ovr), 9],
-    ['LW|-0.85', 'ATA', (a, b) => b.velocidade - a.velocidade, 11],
-    ['RW|0.85',  'ATA', (a, b) => b.velocidade - a.velocidade, 7],
-  ],
   chave(pos, slotX) { return pos + '|' + slotX; },
   mean(l, f) { return l.length ? l.reduce((s, p) => s + f(p), 0) / l.length : 0; },
   /** "Giorgian de Arrascaeta" -> "Arrascaeta" (nome curto do rótulo em campo); com até 2 palavras a narração usa o nome inteiro. */
@@ -128,43 +116,40 @@ const Elenco = {
   },
   falado(nome) { const p = nome.trim().split(/\s+/); return p.length <= 2 ? nome.trim() : this.curto(nome); },
 
-  /** Monta o time de um clube: 11 titulares nos slots do 4-3-3 + notas de ataque, defesa e overall. */
+  /** Monta o clube: elenco completo (com fôlego e energia), escalação padrão no 4-3-3 com os titulares do JSON, camisas e forças. */
   montar(clube, idx) {
-    const vis = Clubes.visual(clube.nome), tit = clube.jogadores.filter(p => p.titular), livres = new Set(tit), slots = new Map(), lista = [];
-    for (const [chave, grupo, cmp, num] of this.ORDEM) {
-      let pool = tit.filter(p => livres.has(p) && p.posicao === grupo);
-      if (!pool.length) pool = tit.filter(p => livres.has(p));                        // elenco fora do padrão 1-4-3-3: completa com quem sobrou
-      const p0 = pool.sort(cmp)[0]; livres.delete(p0);
-      const pos = chave.split('|')[0], j = { ...p0, nomeFalado: this.falado(p0.nome), rot: this.curto(p0.nome), slotKey: chave, slotPos: pos, num, clube: idx };
-      slots.set(chave, j); lista.push(j);
-    }
-    const gk = slots.get('GK|0'), ata = lista.filter(p => ['ST', 'LW', 'RW'].includes(p.slotPos)), mei = lista.filter(p => ['DM', 'CM'].includes(p.slotPos)),
-          def = lista.filter(p => ['LB', 'RB', 'CB'].includes(p.slotPos)), M = this.mean.bind(this);
-    return {
-      idx, nome: clube.nome, sg: vis.sg, vis, tit: lista, slots, gk, ata, mei, def,
-      ovr: M(lista, p => p.ovr),
-      ataque: 0.6 * M(ata, p => p.ovr) + 0.4 * M(mei, p => p.ovr),                                   // força de ataque (overall de quem ataca)
-      defesa: 0.55 * M(def, p => p.ovr) + 0.30 * gk.ovr + 0.15 * M(mei, p => p.ovr),                 // força de defesa (zaga, goleiro e volantes)
-    };
+    const vis = Clubes.visual(clube.nome);
+    const elenco = clube.jogadores.map(p => ({ ...p, folego: Tatica.folego(p), nomeFalado: this.falado(p.nome), rot: this.curto(p.nome), clube: idx,
+                                               energia: 100, num: null, slotKey: null, slotPos: null, vaga: null }));
+    const L = { idx, nome: clube.nome, sg: vis.sg, vis, elenco, postura: 'equilibrada' };
+    Tatica.escalar(L, this.FORM, Tatica.auto(this.FORM, elenco.filter(p => p.titular)));
+    Tatica.numerar(L);
+    return L;
   },
   /** Jogador do time para um slot do cenário (pos = função, x = lado na formação). */
   porSlot(L, pos, x) { return L.slots.get(this.chave(pos, x)) || null; },
 
   /**
-   * Converte o elenco nos atributos do jogo (os mesmos nove sliders): os cinco ofensivos vêm dos atacantes (60%) e meias (40%) do SEU time;
-   * Marcação e Reflexo vêm da zaga/volantes e do goleiro do ADVERSÁRIO; Ataque do Adversário e Sua Defesa saem das mesmas fórmulas do jogo.
+   * Converte o elenco nos atributos do jogo (os mesmos nove sliders), sempre com os valores EFETIVOS (energia + improviso):
+   * os cinco ofensivos vêm dos atacantes (60%) e meias (40%) do SEU time; Marcação e Reflexo vêm da zaga/volantes e do goleiro
+   * do ADVERSÁRIO; Ataque do Adversário e Sua Defesa saem das mesmas fórmulas do jogo.
    */
   attr(us, op) {
-    const M = this.mean.bind(this), c = v => Math.max(1, Math.min(99, Math.round(v)));
-    const off = (L, f) => 0.6 * M(L.ata, f) + 0.4 * M(L.mei, f), marc = L => 0.7 * M(L.def, p => p.marcacao) + 0.3 * M(L.mei, p => p.marcacao);
-    const atk = L => 0.2 * off(L, p => p.forca) + 0.2 * off(L, p => p.curva) + 0.2 * off(L, p => p.velocidade) + 0.25 * off(L, p => p.drible) + 0.15 * off(L, p => p.posicionamento);
-    return { force: c(off(us, p => p.forca)), curve: c(off(us, p => p.curva)), speed: c(off(us, p => p.velocidade)), dribble: c(off(us, p => p.drible)), pos: c(off(us, p => p.posicionamento)),
-             reflex: c(op.gk.reflexo), mark: c(marc(op)), oatk: c(atk(op)), mdef: c(0.6 * marc(us) + 0.4 * us.gk.reflexo) };
+    const M = this.mean.bind(this), c = v => Math.max(1, Math.min(99, Math.round(v))), E = (p, k) => Tatica.ef(p, k), A = l => Tatica.ativos(l);
+    const off = (L, k) => 0.6 * M(A(L.ata), p => E(p, k)) + 0.4 * M(A(L.mei), p => E(p, k)), marc = L => 0.7 * M(A(L.def), p => E(p, 'marcacao')) + 0.3 * M(A(L.mei), p => E(p, 'marcacao'));
+    const atk = L => 0.2 * off(L, 'forca') + 0.2 * off(L, 'curva') + 0.2 * off(L, 'velocidade') + 0.25 * off(L, 'drible') + 0.15 * off(L, 'posicionamento');
+    const inf = L => 1 - 0.05 * Tatica.expulsos(L).length;                        // com um a menos, cada um cobre mais campo e rende menos
+    const iu = inf(us), io = inf(op);
+    return { force: c(off(us, 'forca') * iu), curve: c(off(us, 'curva') * iu), speed: c(off(us, 'velocidade') * iu), dribble: c(off(us, 'drible') * iu), pos: c(off(us, 'posicionamento') * iu),
+             reflex: c(E(op.gk, 'reflexo')), mark: c(marc(op) * io), oatk: c(atk(op) * io), mdef: c((0.6 * marc(us) + 0.4 * E(us.gk, 'reflexo')) * iu) };
   },
-  /** Quantidade de lances jogáveis da partida: compara o overall do SEU ataque com o overall da DEFESA adversária (+ sorte). 2 a 9. */
-  qtdLances(us, op) {
-    const dif = us.ataque - op.defesa;
-    return Math.max(2, Math.min(9, Math.round(5 + dif * 0.22 + Rnd.r(-1.3, 1.3))));
+  /**
+   * Quantidade de lances jogáveis da partida: compara o overall do SEU ataque com o overall da DEFESA adversária (+ sorte,
+   * sorteada uma vez por partida) e aplica a postura (ofensiva = mais lances, defensiva = menos). 2 a 10.
+   */
+  qtdLances(us, op, sorte = Rnd.r(-1.3, 1.3), postura = 'equilibrada') {
+    const dif = us.ataque - op.defesa, mul = (Tatica.POSTURAS[postura] || Tatica.POSTURAS.equilibrada).lances;
+    return Math.max(2, Math.min(10, Math.round((5 + dif * 0.22 + sorte) * mul)));
   },
 
   /* ----- Uniformes ----- */
@@ -183,10 +168,11 @@ const Elenco = {
     const ku = this.kit(us, esc.us), ko = this.kit(op, esc.op);
     us.kitJogo = ku; op.kitJogo = ko;                                          // placar da transmissão usa as cores do uniforme em campo
     const livres = this.GOLEIROS.filter(c => this.dist(c, ku.camisaPrimaria) > 110 && this.dist(c, ko.camisaPrimaria) > 110);
-    const gu = this.kitGol(livres[1] || this.GOLEIROS[1]), go = this.kitGol(livres[0] || this.GOLEIROS[0]);
-    const pintar = (L, kit, kg) => { for (const p of L.tit) p.visual = this.visual(p, p.slotPos === 'GK' ? kg : kit); };
-    pintar(us, ku, gu); pintar(op, ko, go);
+    us.kitGolJogo = this.kitGol(livres[1] || this.GOLEIROS[1]); op.kitGolJogo = this.kitGol(livres[0] || this.GOLEIROS[0]);
+    this.pintar(us); this.pintar(op);
   },
+  /** Aparência de TODO o elenco (reservas também, para entrarem já vestidos); quem está no gol usa a camisa de goleiro. */
+  pintar(L) { for (const p of L.elenco) p.visual = this.visual(p, p.slotPos === 'GK' ? L.kitGolJogo : L.kitJogo); },
   visual(p, kit) {
     const a = p.aparencia || {}, gol = !!kit.goleiro;
     return { pele: a.pele, cabeloEstilo: Aparencia.ESTILOS.includes(a.cabeloEstilo) ? a.cabeloEstilo : 'curto', cabeloCor: a.cabeloCor, barba: !!a.barba,
@@ -208,15 +194,18 @@ const Sim = {
   poisson(l) { const L = Math.exp(-l); let k = 0, p = 1; do { k++; p *= Math.random(); } while (p > L && k < 12); return k - 1; },
   /** Autor do gol: sorteio ponderado por posição (atacante > meia > zagueiro) e overall. */
   autor(L) {
-    const w = { ST: 1.6, LW: 1.1, RW: 1.1, CM: 0.5, DM: 0.22, LB: 0.12, RB: 0.12, CB: 0.14, GK: 0 };
-    const ps = L.tit.map(p => ({ p, w: (w[p.slotPos] || 0.1) * Math.pow(p.ovr / 75, 4) * (0.7 + 0.3 * p.forca / 75) }));
+    const w = { ST: 1.6, LW: 1.1, RW: 1.1, AM: 0.8, LM: 0.6, RM: 0.6, CM: 0.5, LWB: 0.25, RWB: 0.25, DM: 0.22, LB: 0.12, RB: 0.12, CB: 0.14, GK: 0 };
+    const ps = Tatica.ativos(L.tit).map(p => ({ p, w: (w[p.slotPos] || 0.1) * Math.pow(p.ovr / 75, 4) * (0.7 + 0.3 * p.forca / 75) }));
     let r = Math.random() * ps.reduce((s, o) => s + o.w, 0);
     for (const o of ps) { r -= o.w; if (r <= 0) return o.p; }
     return ps[0].p;
   },
-  /** Joga uma partida (h = time da casa, a = visitante, como lineups). Devolve { hg, ag, g:[[minuto, 'h'|'a', autor]] }. */
-  jogo(h, a) {
-    const hg = Math.min(8, this.poisson(this.lambda(h.ataque, a.defesa, true))), ag = Math.min(8, this.poisson(this.lambda(a.ataque, h.defesa, false))), g = [];
+  /**
+   * Joga uma partida (h = time da casa, a = visitante, como lineups). aj = { h, a }: pontos de ataque somados a cada lado
+   * (postura do usuário quando ele só simula a partida). Devolve { hg, ag, g:[[minuto, 'h'|'a', autor]] }.
+   */
+  jogo(h, a, aj = {}) {
+    const hg = Math.min(8, this.poisson(this.lambda(h.ataque + (aj.h || 0), a.defesa, true))), ag = Math.min(8, this.poisson(this.lambda(a.ataque + (aj.a || 0), h.defesa, false))), g = [];
     for (let i = 0; i < hg; i++) g.push([Rnd.i(1, 90), 'h', this.autor(h).nome]);
     for (let i = 0; i < ag; i++) g.push([Rnd.i(1, 90), 'a', this.autor(a).nome]);
     g.sort((u, v) => u[0] - v[0]);
@@ -227,9 +216,11 @@ const Sim = {
 /* ------------------------ Campeonato: calendário, tabela, save ------------------------ */
 const Liga = {
   KEY: 'nst_liga_v1',
-  S: null,          // estado salvo: { v, user, round, nomes, fx: [rodada][jogo] = { h, a, hg, ag, g } }
+  S: null,          // estado salvo: { v, user, round, nomes, fx: [rodada][jogo] = { h, a, hg, ag, g }, tat: {form, postura, tit}, energia: {nome: %},
+                    //                 disc: {clube: {nome: {am: amarelos acumulados, susp: jogos de suspensão}}} }
+  avisoSusp: [],    // trocas automáticas da última rodada no seu time (suspenso sai, reserva entra), para o card da Central
   L: [],            // times (lineups) na ordem do JSON
-  /** Monta os times a partir do JSON carregado e calibra a simulação. */
+  /** Monta os times a partir do JSON carregado e calibra a simulação (com as escalações padrão, todos descansados). */
   prepararDados() { this.L = Dados.json.clubes.map((c, i) => Elenco.montar(c, i)); Sim.calibrar(this.L); },
 
   /**
@@ -264,20 +255,64 @@ const Liga = {
 
   novo(user) {
     this.S = { v: 1, user, round: 0, nomes: this.L.map(l => l.nome), fx: this.calendario(this.L.length), criado: Date.now() };
-    this.salvar();
+    Tatica.carregar(this.L[user], this.S);                                     // escalação padrão, todos com 100% de energia
+    this.aplicarDisciplina();
+  },
+  /* ----- Disciplina: cartões acumulados e suspensões (todos os clubes) ----- */
+  disc(i) { const d = this.S.disc || (this.S.disc = {}); return d[i] || (d[i] = {}); },
+  /**
+   * Marca em cada elenco quem está suspenso (p.suspenso) e quantos amarelos acumula (p.amarelos), e tira os suspensos da escalação:
+   * no seu clube, o titular suspenso dá lugar ao melhor reserva da posição (o resto da sua escalação não muda); os bots voltam
+   * à escalação padrão e cobrem os suspensos do mesmo jeito. Salva o estado tático.
+   */
+  aplicarDisciplina() {
+    this.avisoSusp = [];
+    for (const L of this.L) {
+      const d = (this.S.disc && this.S.disc[L.idx]) || {};
+      for (const p of L.elenco) { const r = d[p.nome]; p.suspenso = !!(r && r.susp > 0); p.amarelos = r ? r.am : 0; }
+      if (L.idx === this.S.user) this.avisoSusp = Tatica.cobrirSuspensos(L);
+      else { Tatica.escalar(L, Elenco.FORM, Tatica.auto(Elenco.FORM, L.elenco.filter(p => p.titular))); Tatica.cobrirSuspensos(L); }
+    }
+    this.salvarTatica();
+  },
+  /**
+   * Fim da rodada: quem estava suspenso cumpriu (todos os clubes jogam toda rodada); depois entram os cartões desta partida:
+   * expulsão = fora da próxima rodada (os amarelos que viraram vermelho não acumulam); amarelo soma 1 e o 3º em jogos
+   * diferentes suspende da próxima rodada e zera a contagem. cartoes = { clube: [{ nome, am, verm }] }.
+   */
+  registrarCartoes(cartoes) {
+    for (const d of Object.values(this.S.disc || {})) for (const r of Object.values(d)) if (r.susp > 0) r.susp--;
+    for (const [i, lst] of Object.entries(cartoes || {})) {
+      const d = this.disc(i);
+      for (const c of lst) {
+        const r = d[c.nome] || (d[c.nome] = { am: 0, susp: 0 });
+        if (c.verm) r.susp = 1;
+        else if (c.am) { r.am++; if (r.am >= 3) { r.am = 0; r.susp = 1; } }
+      }
+    }
   },
   salvar() { try { localStorage.setItem(this.KEY, JSON.stringify(this.S)); } catch (_) {} },
+  /** Grava o estado tático do seu clube (formação, postura, titulares e energias) junto com o campeonato. */
+  salvarTatica() {
+    if (!this.S || !this.L[this.S.user]) return;
+    const L = this.L[this.S.user];
+    this.S.tat = Tatica.serializar(L); this.S.energia = Tatica.energias(L);
+    this.salvar();
+  },
   /** Lê o campeonato salvo; descarta se o elenco/JSON mudou de clubes ou o arquivo estiver corrompido. */
   carregar() {
     try {
       const s = localStorage.getItem(this.KEY); if (!s) return false;
       const o = JSON.parse(s), n = this.L.length;
       if (!o || o.v !== 1 || !Array.isArray(o.fx) || o.fx.length !== 2 * (n - 1) || o.fx.some(r => r.length !== n / 2) || o.nomes.join('|') !== this.L.map(l => l.nome).join('|') || !(o.user >= 0 && o.user < n)) return false;
-      if (o.round === 0 && this.maiorSequencia(o.fx, n) > 2) { o.fx = this.calendario(n); this.S = o; this.salvar(); return true; }   // save antigo sem jogos: tabela nova
-      this.S = o; return true;
+      if (o.round === 0 && this.maiorSequencia(o.fx, n) > 2) o.fx = this.calendario(n);   // save antigo sem jogos: tabela nova
+      this.S = o; Tatica.carregar(this.L[o.user], o);                          // save antigo sem tática: escalação padrão e 100% de energia
+      this.aplicarDisciplina();                                                // save antigo sem disciplina: ninguém suspenso
+      return true;
     } catch (_) { return false; }
   },
-  reiniciar() { try { localStorage.removeItem(this.KEY); } catch (_) {} this.S = null; },
+  /** Apaga o save e remonta os elencos (a escalação do clube antigo não pode sobrar na memória). */
+  reiniciar() { try { localStorage.removeItem(this.KEY); } catch (_) {} this.S = null; if (Dados.json) this.prepararDados(); },
   /** Resumo do campeonato salvo para o menu (lido direto do localStorage, sem precisar dos elencos). null = não há save. */
   resumoSalvo() {
     try {
@@ -298,19 +333,23 @@ const Liga = {
 
   /**
    * Registra o resultado da partida do usuário e SIMULA os outros jogos da rodada (bots). Avança a rodada e salva.
-   * g = gols [[minuto, 'h'|'a', autor]]. Devolve o índice da rodada concluída.
+   * g = gols [[minuto, 'h'|'a', autor]]; cartoes = cartões da partida do usuário (ver registrarCartoes). Devolve o índice da rodada.
    */
-  concluirRodada(fx, hg, ag, g) {
+  concluirRodada(fx, hg, ag, g, cartoes = {}) {
     const r = this.S.round; if (this.feito(fx)) return r;
     fx.hg = hg; fx.ag = ag; fx.g = g;
     for (const f of this.S.fx[r]) if (f !== fx && !this.feito(f)) { const s = Sim.jogo(this.L[f.h], this.L[f.a]); f.hg = s.hg; f.ag = s.ag; f.g = s.g; }
-    this.S.round = r + 1; this.salvar();
+    this.S.round = r + 1;
+    this.registrarCartoes(cartoes); this.aplicarDisciplina();               // suspensões cumpridas/novas e escalações da próxima rodada (salva)
     return r;
   },
-  /** Joga a partida do usuário só por simulação (sem entrar no campo). */
+  /** Joga a partida do usuário só por simulação (sem entrar no campo): a postura pesa no placar e os titulares se desgastam. */
   simularUsuario() {
     const fx = this.jogoDoUsuario(); if (!fx) return -1;
-    const s = Sim.jogo(this.L[fx.h], this.L[fx.a]); return this.concluirRodada(fx, s.hg, s.ag, s.g);
+    const u = this.S.user, eu = this.L[u], P = Tatica.POSTURAS[eu.postura] || Tatica.POSTURAS.equilibrada, casa = fx.h === u;
+    const s = Sim.jogo(this.L[fx.h], this.L[fx.a], casa ? { h: P.simEu, a: P.simEle } : { h: P.simEle, a: P.simEu });
+    Tatica.desgastar(eu, eu.postura, 90, false); Tatica.recuperar(eu); Tatica.recalc(eu); this.salvarTatica();
+    return this.concluirRodada(fx, s.hg, s.ag, s.g);
   },
   /** Classificação: Pontos, Vitórias, Saldo de Gols, Gols Pró (e nome, só para não oscilar). */
   tabela() {
@@ -440,13 +479,15 @@ const Central = {
         <div class="lg-actions">
           <button type="button" class="btn alt sm som-btn" aria-pressed="true">SOM: ON</button>
           <button type="button" class="btn alt sm" data-a="menu">Menu</button>
+          <button type="button" class="btn alt sm" data-a="tat">Tática</button>
           ${fim ? '' : `<button type="button" class="btn lg-play" data-a="play">${and ? 'Retomar partida' : 'Jogar partida'}</button>`}
         </div>
       </header>`;
     if (fim) h += this.final(tab, pos);
     h += `<div class="lg-grid">`;
     if (fx) h += `<section class="lg-card a-next">${this.proximo(fx, tab, pos)}</section>`;
-    h += `<section class="lg-card a-tab">${this.classificacao(tab)}</section>
+    h += `<section class="lg-card a-tat">${Painel.cartaoCentral()}</section>
+          <section class="lg-card a-tab">${this.classificacao(tab)}</section>
           <section class="lg-card a-rod">${this.placar()}</section>
           <section class="lg-card a-art">${this.artilharia()}</section>
         </div>
@@ -463,7 +504,6 @@ const Central = {
     const craque = L => { const c = L.tit.slice().sort((a, b) => b.ovr - a.ovr)[0]; return `${esc(c.nomeFalado)} <small>${c.ovr}</small>`; };
     const dif = me.ovr - op.ovr, quem = Math.abs(dif) < 1.5 ? 'Confronto equilibrado' : dif > 0 ? `${esc(me.nome)} chega com a vantagem de overall` : `${esc(op.nome)} chega com a vantagem de overall`;
     const pv = (a, rot, b) => `<div class="pv"><span>${a}</span><em>${rot}</em><span>${b}</span></div>`;
-    const jo = Liga.S.fx[Liga.S.round].indexOf(fx);
     return `<h3>Próximo confronto <span class="badge ${casa ? 'casa' : 'fora'}">${casa ? 'Em casa' : 'Fora de casa'}</span></h3>
       <div class="lg-vs">
         <div class="vs-t">${strip(me.vis)}<b>${esc(me.nome)}</b><small>${casa ? 'CASA' : 'FORA'}</small></div>
@@ -534,6 +574,7 @@ Central.el.addEventListener('click', e => {
     case 'play': Central.jogar(); break;
     case 'sim': Central.simular(); break;
     case 'menu': openMenu(); break;
+    case 'tat': Painel.abrir('central'); break;
     case 'reset': Central.reiniciar(b); break;
     case 'prev': Central.ver = Math.max(0, Central.ver - 1); Central.render(); break;
     case 'next': Central.ver = Math.min(Liga.total - 1, Central.ver + 1); Central.render(); break;
@@ -546,6 +587,8 @@ const Uniformes = {
   el: $id('kits'), fx: null, esc: null,
   aberta() { return this.el.classList.contains('show'); },
   ocultar() { this.el.classList.remove('show'); },
+  /** Volta da tela Tática & Elenco aberta no pré-jogo (as escolhas de uniforme continuam as mesmas). */
+  reabrir() { if (!this.fx) return Central.mostrar(); this.el.classList.add('show'); game.menuOpen = true; game.input.cancel(); },
   abrir(fx) {
     const u = Liga.S.user, casa = fx.h === u, us = Liga.L[u], op = Liga.L[casa ? fx.a : fx.h], sug = Elenco.sugestao(Liga.L[fx.h], Liga.L[fx.a]);
     this.fx = fx; this.esc = { us: casa ? sug.casa : sug.fora, op: casa ? sug.fora : sug.casa };
@@ -570,10 +613,11 @@ const Uniformes = {
       </section>`;
     this.el.innerHTML = `<div class="lg-wrap kt-wrap">
       <header class="kt-head"><span class="lg-eyebrow">Rodada ${Liga.S.round + 1} · antes de entrar em campo</span><h2>Uniformes da <span>partida</span></h2>
-        <p>Escolha o uniforme do seu time e o do adversário.</p></header>
+        <p>Escolha o uniforme do seu time e o do adversário. Confira a escalação em Tática &amp; Elenco antes de entrar.</p></header>
       <div class="kt-grid">${(() => { const meu = lado(us, 'us', 'Seu time', casa ? 'em casa' : 'fora de casa'), deles = lado(op, 'op', 'Adversário', casa ? 'fora de casa' : 'em casa');
         return casa ? meu + deles : deles + meu; })()}</div>                                    <!-- mandante sempre à esquerda, visitante à direita -->
-      <div class="kt-foot"><button type="button" class="btn alt" data-a="voltar">Voltar</button><button type="button" class="btn lg-play" data-a="ok">Entrar em campo</button></div>
+      <div class="kt-foot"><button type="button" class="btn alt" data-a="voltar">Voltar</button><button type="button" class="btn alt" data-a="tat">Tática &amp; Elenco</button>
+        <button type="button" class="btn lg-play" data-a="ok">Entrar em campo</button></div>
     </div>`;
     this.L = { us, op }; this.marcar();
     for (const cv of this.el.querySelectorAll('.kt-cv')) { const L = this.L[cv.dataset.lado]; this.boneco(cv, L, Elenco.kit(L, +cv.dataset.i)); }
@@ -591,6 +635,7 @@ Uniformes.el.addEventListener('click', e => {
   const op = e.target.closest('.kt-op'); if (op) { Uniformes.esc[op.dataset.lado] = +op.dataset.i; return Uniformes.marcar(); }
   const b = e.target.closest('[data-a]'); if (!b) return;
   if (b.dataset.a === 'voltar') { Uniformes.ocultar(); Central.mostrar(); }
+  if (b.dataset.a === 'tat') Painel.abrir('kits');
   if (b.dataset.a === 'ok') Uniformes.confirmar();
 });
 
@@ -615,4 +660,4 @@ async function iniciarCampeonato() {
   if (Liga.carregar()) Central.mostrar(); else Escolha.mostrar();
 }
 
-export { Elenco, Liga, Sim, Central, Escolha, Uniformes, Dados, iniciarCampeonato, continuarCampeonato, novoCampeonato };
+export { Clubes, Elenco, Liga, Sim, Central, Escolha, Uniformes, Dados, iniciarCampeonato, continuarCampeonato, novoCampeonato };

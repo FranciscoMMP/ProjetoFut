@@ -1,6 +1,7 @@
 import { instalarTransmissao } from './transmissao.js';
 import { Game, Tactics, Scenarios } from './motor-campo.js';
-import { Central, Escolha, Liga, continuarCampeonato, novoCampeonato } from './campeonato.js';
+import { Central, Escolha, Uniformes, Liga, continuarCampeonato, novoCampeonato } from './campeonato.js';
+import { Painel } from './tatica.js';
 import { Som } from './audio.js';
 
 /* =============================================================================
@@ -8,7 +9,8 @@ import { Som } from './audio.js';
      motor-campo.js     : configuração, física, jogadores, táticas, gerador de lances, classe Game (campo) e Input
      render-sprites.js  : cores, aparência, sprites pixel art, animação e Renderer (campo, câmera, HUD do canvas)
      transmissao.js     : narração, relógio, minuto a minuto, transição transmissão <-> campo, placar e fim de jogo
-     campeonato.js      : dados do Brasileirão, escalações, simulação dos bots, tabela/calendário e telas Central/Escolha
+     campeonato.js      : dados do Brasileirão, elencos, simulação dos bots, tabela/calendário e telas Central/Escolha/Uniformes
+     tatica.js          : sistema tático (fôlego/energia, formações, postura, improviso, substituições) e tela Tática & Elenco
      main.js (este)     : instala a transmissão no Game, cria o jogo e liga os botões, sliders e menu
 
    Os módulos se importam entre si (ciclos), o que é seguro porque nenhum usa o outro no topo do arquivo, só dentro de
@@ -94,6 +96,7 @@ document.getElementById('toggle').addEventListener('click', e => {
 });
 
 // ----- Transmissão ao vivo (ETAPA 7): velocidade, status e menu retrátil de teste -----
+// (o botão TÁTICA / SUBSTITUIR do campeonato é ligado em tatica.js)
 document.getElementById('bc-speed').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { game.speed = +b.dataset.s; game._hudKey = ''; } });
 document.getElementById('bc-status').addEventListener('click', () => document.getElementById('bc-stpanel').classList.toggle('show'));
 document.getElementById('bc-cfgbtn').addEventListener('click', e => {
@@ -105,9 +108,11 @@ document.getElementById('bc-menu').addEventListener('click', () => openMenu());
 
 // ----- Menu principal (treino / lances de partida) -----
 const menuEl = document.getElementById('menu');
+/** Alguma tela do campeonato por cima do jogo (com ela aberta o relógio não anda). */
+const telaAberta = () => Central.aberta() || Escolha.aberta() || Uniformes.aberta() || Painel.aberta();
 function openMenu() {
   game.menuOpen = true; game.input.cancel();
-  const tela = Central.aberta() || Escolha.aberta();
+  const tela = telaAberta();
   // "Continuar" só aparece com um treino/partida pausado pelo botão Menu (nunca por cima da Central ou da escolha do clube)
   const canResume = !tela && game.started && !(game.mode === 'match' && game.match.over);
   document.getElementById('m-cont').style.display = canResume ? '' : 'none';
@@ -127,7 +132,7 @@ function ligaMenu(aberto) {
     $m('m-liga-info').textContent = txt; $m('m-liga-perde').textContent = txt;
   }
 }
-function closeMenu() { game.menuOpen = Central.aberta() || Escolha.aberta(); menuEl.classList.remove('show'); }
+function closeMenu() { game.menuOpen = telaAberta(); menuEl.classList.remove('show'); }
 document.getElementById('menu-btn').addEventListener('click', openMenu);
 document.getElementById('m-cont').addEventListener('click', closeMenu);
 document.getElementById('m-train').addEventListener('click', () => { Central.ocultar(); Escolha.ocultar(); game.startTraining(); closeMenu(); });

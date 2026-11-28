@@ -805,8 +805,60 @@ class Renderer {
     ctx.fillText(game.strike ? '' : hint, this.w / 2, this.h - 10, this.w - 16);
 
     if (!game.strike && !game.trans) this.drawOffscreenArrows(ctx, game);
+    if (!game.strike && !game.trans && !game.locked) this.drawPainelFolego(ctx, game, t);
     if (game.banner && !game.trans) this.drawBanner(ctx, game.banner);
     if (game.trans) this.drawTransition(ctx, game.trans);
+  }
+
+  /** Cor da barra de fôlego do lance: verde (folgado), amarelo (passou da metade: já perde velocidade), vermelho (no limite). */
+  corFolego(gas) { return gas >= 50 ? '#4ade80' : gas >= 25 ? '#facc15' : '#f87171'; }
+
+  /**
+   * FÔLEGO DO LANCE (espaço do mundo): barrinha acima da cabeça. w = largura em px de tela; abaixo de 25% pisca.
+   * Tamanhos divididos pela escala para ficarem iguais em qualquer zoom.
+   */
+  barraFolego(ctx, x, y, gas, w, alpha, t) {
+    const s = this.s, bw = w / s, bh = 4 / s, f = Util.clamp(gas / 100, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha * (gas < 25 ? 0.6 + 0.4 * Math.sin(t / 90) : 1);
+    ctx.fillStyle = 'rgba(2,10,24,.8)'; ctx.fillRect(x - bw / 2 - 1 / s, y - bh / 2 - 1 / s, bw + 2 / s, bh + 2 / s);
+    ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(x - bw / 2, y - bh / 2, bw, bh);
+    ctx.fillStyle = this.corFolego(gas); ctx.fillRect(x - bw / 2, y - bh / 2, bw * f, bh);
+    ctx.fillStyle = 'rgba(2,10,24,.7)'; ctx.fillRect(x - 1 / (2 * s), y - bh / 2, 1 / s, bh);   // marca dos 50% (onde começa a perder velocidade)
+    ctx.restore();
+  }
+
+  /**
+   * FÔLEGO DO LANCE (espaço de tela): painel do jogador com a bola, no canto inferior esquerdo.
+   * Mostra nome/camisa, a barra grande, a % e o efeito atual ("−12% velocidade" / "SEM FÔLEGO").
+   */
+  drawPainelFolego(ctx, game, t) {
+    const p = game.player; if (!p) return;
+    const gas = Util.clamp(p.gas ?? 100, 0, 100), cor = this.corFolego(gas);
+    const pw = Math.min(176, this.w * 0.42), ph = 44, x = 10, y = this.h - 34 - ph;
+    const nome = p.real ? (p.real.nomeFalado || p.real.nome) : `Camisa ${p.num}`;
+    const perda = Math.round((1 - (p.fg || 1)) * 100);
+    ctx.save();
+    ctx.fillStyle = 'rgba(2,10,24,.82)'; ctx.beginPath(); ctx.roundRect(x, y, pw, ph, 7); ctx.fill();
+    ctx.fillStyle = cor; ctx.fillRect(x, y + 6, 3, ph - 12);                                  // filete na cor do estado
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    ctx.font = '800 9px "Chakra Petch",system-ui,sans-serif'; ctx.fillStyle = '#94a3b8';
+    ctx.fillText('FÔLEGO NO LANCE', x + 10, y + 10, pw - 60);
+    ctx.font = '800 11px "Chakra Petch",system-ui,sans-serif'; ctx.fillStyle = '#f1f5f9';
+    ctx.fillText(`${p.num} ${nome}`.toUpperCase(), x + 10, y + 21, pw - 58);
+    ctx.textAlign = 'right'; ctx.font = '900 15px "Chakra Petch",system-ui,sans-serif'; ctx.fillStyle = cor;
+    ctx.fillText(Math.round(gas) + '%', x + pw - 8, y + 14);
+    const bx = x + 10, by = y + 34, bw = pw - 18, bh = 5;
+    ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.fillRect(bx, by, bw, bh);
+    ctx.globalAlpha = gas < 25 ? 0.65 + 0.35 * Math.sin(t / 90) : 1;
+    ctx.fillStyle = cor; ctx.fillRect(bx, by, bw * gas / 100, bh);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(2,10,24,.9)'; ctx.fillRect(bx + bw / 2 - 0.5, by, 1, bh);           // marca dos 50%
+    if (perda > 0) {
+      ctx.textAlign = 'right'; ctx.font = '700 8px "Chakra Petch",system-ui,sans-serif'; ctx.fillStyle = cor;
+      ctx.fillText(gas < 5 ? 'SEM FÔLEGO' : `−${perda}% VEL.`, x + pw - 8, y + 28);
+    }
+    ctx.restore();
   }
 
   /**
@@ -835,7 +887,7 @@ class Renderer {
       }
       ctx.restore();
     };
-    for (const d of game.defenders) one(d, '#fca5a5', 0.3, '');
+    for (const d of game.defenders) one(d, d.recomp ? '#f87171' : '#fca5a5', d.recomp ? 0.95 : 0.3, '');   // quem volta para recompor: seta forte (sem texto), mostra de onde ele vem
     for (const a of game.attackers) if (a !== game.player) one(a, '#facc15', 0.95, String(a.num));
   }
 
@@ -914,8 +966,11 @@ class Renderer {
     for (const e of lista) desenharJogador(ctx, e);
 
     // 3) textos (número da camisa acima da cabeça dos atacantes + função tática sob os pés)
+    // fôlego do lance: barrinha acima da cabeça (atacantes sempre; zagueiros só depois que começam a cansar)
+    for (const d of game.defenders) if ((d.gas ?? 100) < 97) this.barraFolego(ctx, d.x, d.y - 40, d.gas, 16, 0.8, t);
+    for (const a of game.attackers) this.barraFolego(ctx, a.x, a === p ? a.y - 54 : a.y - 40, a.gas ?? 100, a === p ? 24 : 18, 1, t);   // portador: acima da setinha amarela
     for (const a of game.attackers) {
-      if (a !== p && game.aids && game.isOffside(a, b.y)) this.label(ctx, 'IMPEDIDO', a.x, a.y - 46, 9, '#fca5a5');
+      if (a !== p && game.aids && game.isOffside(a, b.y)) this.label(ctx, 'IMPEDIDO', a.x, a.y - 50, 9, '#fca5a5');
       this.label(ctx, String(a.num), a.x, a.y - 31, a === p ? 10 : 9, a === p ? '#fde047' : '#fef9c3');
       if (a.pos) this.label(ctx, a.real ? a.real.rot.toUpperCase() : Tactics.LABEL[a.pos], a.x, a.y + DY + 6 + 5 / s, 8, 'rgba(254,249,195,.9)');
     }

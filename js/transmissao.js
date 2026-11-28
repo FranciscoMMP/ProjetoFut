@@ -3,10 +3,13 @@ import { Liga, Elenco, Sim } from './campeonato.js';
 import { syncSliders } from './main.js';
 import { Cores, Estadio } from './render-sprites.js';
 import { Som } from './audio.js';
+import { Tatica, Painel } from './tatica.js';
 
 /* =============================================================================
    TRANSMISSÃO: narração (Ctx + bancos de frases), relógio da partida, minuto a minuto, cartões, gols do adversário,
    aviso do lance decisivo -> campo em tela cheia -> resultado de volta ao feed, placar/HUD e fim de jogo.
+   No campeonato, também o lado tático da partida: desgaste de energia a cada minuto, postura pesando nas chances
+   de cada lado, substituições e mudanças táticas registradas na linha do tempo (as regras ficam em tatica.js).
    Os métodos de TransmissaoMetodos são da classe Game (usam this = o jogo); instalarTransmissao(Game) os copia para o protótipo.
    ============================================================================= */
 
@@ -15,6 +18,7 @@ import { Som } from './audio.js';
  * Sorteia nomes reais dos titulares para as frases. Sem campeonato (treino/amistoso) devolve "camisa N" e "seu time" / "Adversário".
  * Fichas das frases: {U} {u} seu clube | {O} {o} clube adversário | {ua} {um} {ud} {ug} {up} atacante/meia/zagueiro/goleiro/qualquer jogador do SEU time |
  * {oa} {om} {od} {og} {op} idem do adversário (um dígito no fim, ex. {um2}, pede outro jogador) | {S} {A} {C} {T} {R} nomes dados pelo jogo.
+ * Os grupos (ata/mei/def/gk/tit) são lidos na hora: depois de uma substituição o jogador que entrou já aparece nas frases.
  */
 class Ctx {
   constructor(us, op) { this.us = us || null; this.op = op || null; }
@@ -27,7 +31,10 @@ class Ctx {
   jog(lado, papel) {
     const L = lado === 'us' ? this.us : this.op;
     if (!L) return papel === 'g' ? 'o goleiro' : 'camisa ' + Rnd.i(2, 11);
-    const pool = papel === 'a' ? L.ata : papel === 'm' ? L.mei : papel === 'd' ? L.def : papel === 'g' ? [L.gk] : L.tit.filter(p => p.slotPos !== 'GK');
+    const campo = l => (l || []).filter(p => !p.expulso);                    // expulso some da narração
+    let pool = papel === 'a' ? campo(L.ata) : papel === 'm' ? campo(L.mei) : papel === 'd' ? campo(L.def) : papel === 'g' ? [L.gk] : campo(L.tit).filter(p => p.slotPos !== 'GK');
+    if (!pool.length) pool = campo(L.tit).filter(p => p.slotPos !== 'GK');
+    if (!pool.length) pool = [L.gk];
     return Rnd.pick(pool).nomeFalado;
   }
   /** Goleiro. */
@@ -77,6 +84,19 @@ const Narracao = {
   US_WASTE: ['{ua} arrisca de longe e a bola vai por cima.', '{og} faz boa defesa em chute de {ua}.', 'Finalização de {um} é bloqueada por {od}.', 'Chute de fora da área de {um} passa rente à trave!'],
   OPP_GOAL: ['Chute cruzado de {S}, sem chance para {ug}.', 'Contra-ataque rápido: {A} lança e {S} finaliza com categoria.', 'Cabeceio firme de {S} depois do cruzamento de {A}.',
              'Falha na marcação de {ud} e {S} bate com liberdade no canto.', 'Bomba de fora da área de {S}, no ângulo!'],
+  /** Postura ofensiva: a defesa fica exposta (contra-ataques do rival). */
+  CONTRA_OPP: ['{U} adiantado demais: {oa} puxa o contra-ataque e {ud} precisa parar com falta.', 'Com {u} todo no ataque, {O} sai em velocidade e {ug} salva no último instante!',
+               'Bola nas costas de {ud}! {oa} aproveita o espaço deixado pela postura ofensiva, mas finaliza mal.'],
+  OPP_GOAL_CONTRA: ['Contra-ataque mortal! Com {u} adiantado, {A} lança e {S} sai livre para marcar.', 'A defesa de {u} estava exposta: {S} recebe nas costas e não perdoa {ug}.'],
+  /** Expulsão no seu time: o setor do buraco fica exposto (frase escolhida pelo setor do expulso). */
+  BURACO: { DEF: ['Com a zaga desfalcada, {oa} entra livre pela vaga do expulso e {ug} sai para abafar!', '{O} explora o buraco na defesa de {u}: {oa} recebe sem marcação e chuta para fora.'],
+            MEI: ['Sem um homem no meio, {U} não consegue fechar: {om} conduz livre e acha {oa}.', '{O} rouba no meio-campo desfalcado e sai em velocidade.'],
+            ATA: ['{U} com um a menos na frente: a bola volta rápido para o campo de defesa.'] },
+  EXPULSO_US: { DEF: 'A zaga de {U} fica com um a menos e exposta. Dá para cobrir a vaga em TÁTICA / SUBSTITUIR.',
+                MEI: 'O meio-campo de {U} fica com um a menos: o rival vai chegar mais. Dá para mudar em TÁTICA / SUBSTITUIR.',
+                ATA: '{U} fica com um a menos no ataque: vai ser mais difícil criar chances.' },
+  /** Postura defensiva: time fechado. */
+  FECHADO_US: ['{U} fechado em duas linhas: {ud} e {ud2} anulam a jogada de {oa}.', 'Bloco baixo de {u}: {O} roda a bola sem encontrar espaço.', '{um} recua para ajudar a marcação e {u} se protege.'],
   /** Aviso de "é a sua chance!" por tipo de lance ({C} = quem está com a bola). */
   HEAD: {
     contra: '{C} sai em CONTRA-ATAQUE perigoso! É a sua chance!', entrada: '{C} recebe na entrada da área! É a sua chance!', parada: 'FALTA PERIGOSA a favor! {C} vai para a cobrança. É a sua chance!',
@@ -123,12 +143,18 @@ function corDoTime(cands, evitar) {
 /* ------------------------------ Métodos da transmissão (classe Game) ------------------------------ */
 class TransmissaoMetodos {
   /* ----- Campeonato na partida: começar, uniformes/siglas, placar com mando, registro do resultado ----- */
-  /** Começa a partida do usuário na rodada: veste os times, converte o elenco nos atributos do jogo e abre a transmissão. */
+  /**
+   * Começa a partida do usuário na rodada: energias (seu time como ficou na rodada anterior, rival inteiro), uniformes,
+   * formação/postura salvas em Tática & Elenco, atributos efetivos do elenco e a transmissão.
+   */
   startLeagueMatch(fx, esc) {
     const eu = Liga.S.user, us = Liga.L[eu], op = Liga.L[fx.h === eu ? fx.a : fx.h];
+    Tatica.prepararPartida(us, op, Liga.S);
     Elenco.vestir(us, op, esc || { us: 0, op: 0 });
     this.lineups = { us, op }; this.cx = new Ctx(us, op); this.fora = fx.a === eu; this.fxAtual = fx;
-    Tactics.forms.us = Tactics.forms.opp = Elenco.FORM;
+    this.tj = { subs: 0, saiu: new Set(), cansados: new Set() };            // estado tático da partida: substituições feitas e quem já saiu
+    this.atualizarVazios();                                                   // ninguém expulso no começo
+    Tactics.forms.us = us.form; Tactics.forms.opp = Elenco.FORM; Tactics.postura = us.postura || 'equilibrada';
     for (const [id, k] of [['s-fa', 'us'], ['s-fd', 'opp']]) document.getElementById(id).value = Tactics.forms[k];
     this.forceScn = 'rand'; document.getElementById('s-scn').value = 'rand'; Scenarios.forceN = 0; this.showAids = false; document.getElementById('s-aids').checked = false;
     this.stash = null; Object.assign(this.attr, Elenco.attr(us, op)); syncSliders();
@@ -137,8 +163,13 @@ class TransmissaoMetodos {
     this.mostrarTimes();
     this.newMatch(); this.match.fx = fx;
   }
-  /** Volta ao modo sem campeonato (treino/amistoso): nomes e uniformes genéricos. */
-  sairLiga() { this.lineups = null; this.cx = new Ctx(); this.fora = false; this.fxAtual = null; document.body.classList.remove('liga'); this.mostrarTimes(); }
+  /** Volta ao modo sem campeonato (treino/amistoso): nomes e uniformes genéricos. Partida abandonada não deixa cansaço "fantasma". */
+  sairLiga() {
+    const L = this.lineups;
+    if (L && Liga.S) { Tatica.limparPartida(L.us); Tatica.limparPartida(L.op); Tatica.lerEnergias(L.us, Liga.S); Tatica.recalc(L.us); Tatica.resetarRival(L.op); }
+    this.lineups = null; this.tj = null; Tactics.postura = 'equilibrada'; this.atualizarVazios();
+    this.cx = new Ctx(); this.fora = false; this.fxAtual = null; document.body.classList.remove('liga'); this.mostrarTimes();
+  }
   /** Siglas e cores de cada lado nos placares (quem joga em casa fica à esquerda). */
   mostrarTimes() {
     const L = this.lineups;
@@ -171,11 +202,92 @@ class TransmissaoMetodos {
     const [a, b] = this.fora ? [L.op, L.us] : [L.us, L.op];
     return `${a.nome} ${l} x ${r} ${b.nome}`;
   }
-  /** Campeonato: grava o resultado, simula os outros 9 jogos da rodada (bots) e salva. */
-  registrarLiga() {
+  /** Cartões da partida por clube ({ clube: [{ nome, am, verm }] }), lidos antes de limpar o estado do jogo. */
+  cartoesDaPartida() {
+    const out = {};
+    for (const T of [this.lineups.us, this.lineups.op])
+      out[T.idx] = T.elenco.filter(p => p.cj).map(p => ({ nome: p.nome, am: p.cj.am != null, verm: p.cj.verm != null }));
+    return out;
+  }
+  /** Campeonato: grava o resultado e os cartões (suspensões), simula os outros 9 jogos da rodada (bots) e salva. */
+  registrarLiga(cartoes) {
     const m = this.match, fx = m.fx, casa = fx.h === Liga.S.user;
     const g = m.log.slice().sort((a, b) => a.min - b.min).map(e => [Math.max(1, Math.min(90, e.min)), (e.us === casa) ? 'h' : 'a', e.scorer || 'Autor não informado']);
-    Liga.concluirRodada(fx, casa ? m.home : m.away, casa ? m.away : m.home, g);
+    Liga.concluirRodada(fx, casa ? m.home : m.away, casa ? m.away : m.home, g, cartoes);
+  }
+
+  /* ----- Sistema tático durante a partida (campeonato) ----- */
+  /** Vagas vazias (expulsos) de cada lado, para o gerador de lances não colocar ninguém nelas (Tactics.vazios). */
+  atualizarVazios() {
+    const L = this.lineups, vz = T => new Set(T ? T.tit.filter(p => p.expulso).map(p => p.slotKey) : []);
+    Tactics.vazios.us = vz(L && L.us); Tactics.vazios.opp = vz(L && L.op);
+  }
+  /**
+   * Depois de uma expulsão no campeonato: o time fica com um a menos (forças, atributos e lances recalculados) e o buraco fica
+   * no setor do expulso. O rival (bot) recompõe a zaga trazendo um atacante; no seu time a narração avisa e você decide.
+   */
+  aposExpulsao(side, p, min) {
+    const L = this.lineups, T = side === 'us' ? L.us : L.op;
+    if (side === 'opp' && p.vaga === 'DEF') {
+      const a = Tatica.ativos(T.ata).find(q => !q.expulso);
+      if (a && !a.expulso) { Tatica.trocarPosicoes(T, p, a); this.feed(min, 'tat', '', this.cx.fmt(`{O} se reorganiza: ${a.nomeFalado} recua para cobrir a defesa e o time fica com um a menos no ataque.`), false, 'op'); }
+    }
+    if (side === 'us') this.feed(min, 'tat', '', this.cx.fmt(Narracao.EXPULSO_US[p.vaga] || Narracao.EXPULSO_US.MEI), false, 'us');
+    this.atualizarVazios(); Tatica.recalc(T); Object.assign(this.attr, Elenco.attr(L.us, L.op));
+    this.ajustarPlano(); this._hudKey = ''; this.refreshStatus();
+  }
+  /**
+   * Um minuto de jogo: todos em campo perdem energia (seu time no ritmo da postura escolhida, o rival no ritmo normal),
+   * as forças dos times e os atributos do jogo são recalculados com os valores efetivos e, abaixo de 35%, a narração avisa.
+   */
+  minutoTatico(min, quiet) {
+    const L = this.lineups; if (!L || !this.match) return;
+    Tatica.desgastar(L.us, Tactics.postura, 1); Tatica.desgastar(L.op, 'equilibrada', 1);
+    Tatica.recalc(L.us); Tatica.recalc(L.op);
+    Object.assign(this.attr, Elenco.attr(L.us, L.op));
+    if (quiet || !this.tj) return;
+    for (const p of L.us.tit) if (p.energia < 35 && !this.tj.cansados.has(p.nome)) {
+      this.tj.cansados.add(p.nome);
+      this.feed(min, 'tat', '', `${p.nomeFalado} está no limite físico (energia ${Math.round(p.energia)}%) e rende bem menos. Hora de pensar numa substituição.`, false, 'us');
+    }
+  }
+  /**
+   * Depois de uma mudança na Tática & Elenco durante a partida: formação/postura passam a valer no motor dos lances,
+   * forças e atributos são recalculados, os lances que faltam são reajustados e a mudança entra na linha do tempo.
+   */
+  aposMudancaTatica(cls, texto) {
+    const L = this.lineups, m = this.match; if (!L || !m) return;
+    Tactics.forms.us = L.us.form; Tactics.postura = L.us.postura || 'equilibrada';
+    const sel = this.$('s-fa'); if (sel) sel.value = Tactics.forms.us;
+    this.atualizarVazios();                                                   // o buraco do expulso pode ter mudado de setor
+    Tatica.recalc(L.us); Object.assign(this.attr, Elenco.attr(L.us, L.op));
+    this.ajustarPlano();
+    if (texto) {
+      const t = this.cx.fmt(texto);
+      this.feed(m.minute, cls, '', t, false, 'us');
+      if (cls === 'sub') m.subsLog.push({ min: m.minute, text: t });
+    }
+    this._hudKey = ''; this.refreshStatus();
+  }
+  /**
+   * Reajusta os lances jogáveis que ainda faltam conforme a postura e a força atual do time: a quantidade alvo é a da partida
+   * inteira proporcional ao tempo restante. Só acrescenta ou retira lances (os já sorteados continuam onde estavam).
+   */
+  ajustarPlano() {
+    const m = this.match, L = this.lineups; if (!L || !m || m.over || m.simulated) return;
+    const ini = m.minute + 2, fim = 87;
+    // expulsões: cada buraco no SEU time tira chances (mais no ataque); buraco no rival abre chances (mais na zaga dele)
+    const exp = Tatica.reducaoAtaque(L.us) * (1 + 0.6 * (Tatica.exposicao(L.op) - 1));
+    const total = Elenco.qtdLances(L.us, L.op, m.sorte, Tactics.postura), alvo = Math.round(total * exp * Util.clamp((fim - m.minute) / (fim - 3), 0, 1));
+    const livre = min => min >= ini && min <= fim && !(min >= 44 && min <= 46) && m.plan.every(p => Math.abs(p.min - min) > 3);
+    for (let t = 0; m.plan.length < alvo && t < 80; t++) {
+      const min = Rnd.i(ini, fim); if (!livre(min)) continue;
+      const type = this.nextType(); if (type === 'penalti') this.penPlanned = true;
+      m.plan.push({ min, type });
+    }
+    while (m.plan.length > alvo) m.plan.splice(Rnd.i(0, m.plan.length - 1), 1);
+    m.plan.sort((a, b) => a.min - b.min); this.lastType = null;
+    m.total = m.plays + m.plan.length;
   }
 
   /** MODO LANCES DE PARTIDA: devolve os atributos escolhidos pelo jogador e começa uma partida nova. */
@@ -204,21 +316,21 @@ class TransmissaoMetodos {
     this.loadScenario(Scenarios.make(this.match.plan[0].type));      // só para o motor ter um estado válido; o lance de verdade é sorteado ao jogar
     this.view = 'broadcast'; this.setBroadcastUI(true);
     this.feed(0, 'info', '', this.lineups
-      ? `RODADA ${Liga.S.round + 1} · COMEÇA O JOGO! ${this.lineups.us.nome} e ${this.lineups.op.nome}, ${this.fora ? 'fora de casa' : 'em casa'}. A bola rola no estádio lotado...`
+      ? `RODADA ${Liga.S.round + 1} · COMEÇA O JOGO! ${this.lineups.us.nome} e ${this.lineups.op.nome}, ${this.fora ? 'fora de casa' : 'em casa'}. ${this.lineups.us.nome} no ${this.lineups.us.form}, postura ${Tatica.POSTURAS[Tactics.postura].nome.toLowerCase()}. A bola rola no estádio lotado...`
       : 'COMEÇA O JOGO! A bola rola no estádio lotado...');
     if (this.started) Som.apito('curto');                         // apito inicial
   }
-  /** Estado de uma partida nova. rhythm = "ritmo" da partida (sorteado), usado só na estimativa de equilíbrio. */
+  /** Estado de uma partida nova. rhythm = "ritmo" da partida (sorteado), usado só na estimativa de equilíbrio; sorte = parte aleatória da quantidade de lances. */
   freshMatch() {
     const g = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());   // normal(0,1)
     return { minute: 0, clock: 0, phase: 'run', pauseT: 0, after: null, cur: null, promptEl: null, plan: [], total: 0, goalsUs: 0,
              cards: { us: { y: 0, r: 0 }, opp: { y: 0, r: 0 } },
              home: 0, away: 0, over: false, plays: 0, log: [], stats: {}, simulated: false, rhythm: Math.exp(0.4 * g()), g, scheduled: 0,
-             amarelos: new Set(), expulsos: new Set(), fx: null, registrado: false };
+             amarelos: new Set(), expulsos: new Set(), fx: null, registrado: false, sorte: Rnd.r(-1.3, 1.3), subsLog: [] };
   }
   /** Sorteia os lances decisivos: um por "faixa" da partida (bem espalhados), nunca no intervalo, cada um com um tipo de cenário (pênalti raro, no máximo 1). */
   planPlays() {
-    const n = this.lineups ? Elenco.qtdLances(this.lineups.us, this.lineups.op) : Rnd.i(CFG.BC_PLAYS[0], CFG.BC_PLAYS[1]), lo = 3, hi = 88, seg = (hi - lo) / n, plan = [];
+    const n = this.lineups ? Elenco.qtdLances(this.lineups.us, this.lineups.op, this.match.sorte, Tactics.postura) : Rnd.i(CFG.BC_PLAYS[0], CFG.BC_PLAYS[1]), lo = 3, hi = 88, seg = (hi - lo) / n, plan = [];
     this.penPlanned = false;                                                     // pênalti: no máximo um por partida
     for (let k = 0; k < n; k++) {
       let min = Math.round(lo + (k + Rnd.r(0.15, 0.85)) * seg);
@@ -308,6 +420,7 @@ class TransmissaoMetodos {
   }
   processMinute(min) {
     const m = this.match;
+    this.minutoTatico(min, false);                                  // campeonato: desgaste de energia de todos em campo
     if (min >= CFG.MATCH_MIN) return this.finalWhistle();
     if (min === 45) return this.halfTime();
     if (m.plan.length && m.plan[0].min <= min) return this.promptPlay(min);
@@ -315,9 +428,22 @@ class TransmissaoMetodos {
   }
   halfTime() {
     const m = this.match; m.clock = 45; m.phase = 'pause'; m.pauseT = CFG.BC_HALF_PAUSE;
+    if (this.lineups) { Tatica.intervalo(this.lineups.us); Tatica.intervalo(this.lineups.op); }
     this.feed(45, 'info', '', `FIM DO PRIMEIRO TEMPO! Intervalo: ${this.placarTxt()}.`);
     Som.apito('intervalo');
     m.after = () => { this.feed(46, 'info', '', 'ROLA A BOLA para o segundo tempo!'); Som.apito('curto'); };
+    this.abrirElencoIntervalo();
+  }
+  /**
+   * Campeonato: no intervalo a tela Tática & Elenco abre sozinha (relógio pausado) para substituições, formação e postura.
+   * Ao fechar ("Voltar ao jogo"), o respiro do intervalo termina normalmente e começa o 2º tempo.
+   */
+  abrirElencoIntervalo() {
+    if (!this.lineups || !this.tj || this.match.simulated) return;
+    Painel.abrir('jogo'); if (!Painel.aberta()) return;
+    const L = this.lineups.us, R = Tatica.resumo(L);
+    Painel.avisar(`INTERVALO · ${this.placarTxt()}. Energia média do time ${R.energia}%, substituições ${this.tj.subs}/${Tatica.MAX_SUBS}. Ajuste o elenco e toque em "Voltar ao jogo" para o 2º tempo.`, 'ok');
+    Painel.render();
   }
   finalWhistle() {
     const m = this.match; m.clock = CFG.MATCH_MIN; m.phase = 'final'; m.pauseT = 1.6;
@@ -325,14 +451,23 @@ class TransmissaoMetodos {
     this.feed(CFG.MATCH_MIN, 'info', '', `FIM DE JOGO! Apita o árbitro: ${this.placarTxt()}. ${r}`); Som.apito('fim');
   }
 
-  /** Eventos de um minuto sem lance jogável: gol do adversário (força do ataque dele x sua defesa) ou lances de narração. */
+  /**
+   * Eventos de um minuto sem lance jogável: gol do adversário (força do ataque dele x sua defesa, já com energia e improviso)
+   * ou lances de narração. A postura muda o rumo: ofensiva expõe a defesa (mais gols e contra-ataques do rival), defensiva fecha o time.
+   */
   minuteEvents(min, quiet) {
-    const m = this.match, A = Util.lvl(this.attr.oatk), D = Util.lvl(this.attr.mdef);
+    const m = this.match, A = Util.lvl(this.attr.oatk), D = Util.lvl(this.attr.mdef), P = Tatica.POSTURAS[Tactics.postura] || Tatica.POSTURAS.equilibrada, L = this.lineups;
+    // Expulsões: no campeonato pesa o SETOR do buraco (zaga desfalcada = o rival chega muito mais); no amistoso, só a contagem
+    const expo = L ? Tatica.exposicao(L.us) * Tatica.reducaoAtaque(L.op) : Math.pow(1.35, m.cards.us.r) * Math.pow(0.7, m.cards.opp.r);
+    const meuAtk = L ? Tatica.reducaoAtaque(L.us) : Math.pow(0.75, m.cards.us.r);
     let rate = 0.0035 + 0.026 * Math.pow(A, 1.6) * (1 - 0.5 * D);                   // mesma taxa de gol do adversário de antes
-    rate *= (m.cards.opp.r ? 0.7 : 1) * (m.cards.us.r ? 1.35 : 1);                    // expulsões pesam
+    rate *= expo * P.golContra;                                                       // expulsões e postura pesam
     if (Math.random() < 1 - Math.exp(-rate)) { this.oppGoal(min); return; }
     if (quiet || Math.random() > 0.6) return;                                         // nem todo minuto rende uma linha
-    const kind = Gen.pick([['neutral', 40], ['tackle', 12], ['foul', 13], ['yellow', 7], ['corner', 8], ['oppchance', 4 + 12 * A], ['uswaste', 7], ['red', 0.35]]);
+    const of = !!L && Tactics.postura === 'ofensiva', df = !!L && Tactics.postura === 'defensiva';
+    const buraco = L ? Tatica.expulsos(L.us).map(p => p.vaga).find(v => v === 'DEF' || v === 'MEI') || (Tatica.expulsos(L.us).length ? 'ATA' : null) : null;
+    const kind = Gen.pick([['neutral', 40], ['tackle', 12], ['foul', 13], ['yellow', 7], ['corner', 8], ['oppchance', (4 + 12 * A) * P.chOpp * expo], ['uswaste', 7 * P.chUs * meuAtk], ['red', 0.35],
+                           ['contra', of ? 6 : 0], ['fechado', df ? 7 : 0], ['buraco', buraco ? 8 * (expo - 0.9) : 0]]);
     const us = Rnd.chance(0.5), side = us ? 'us' : 'opp', cx = this.cx, say = arr => cx.fmt(Rnd.pick(arr));
     switch (kind) {
       case 'neutral': { const r = Math.random(); if (r < 0.4) this.feed(min, 'us', '', say(Narracao.US)); else if (r < 0.8) this.feed(min, 'opp', '', say(Narracao.OPP)); else this.feed(min, 'neutral', '', say(Narracao.MID)); break; }
@@ -343,23 +478,36 @@ class TransmissaoMetodos {
       case 'corner': this.feed(min, 'corner', '', say(us ? Narracao.CORNER_US : Narracao.CORNER_OPP), false, us ? 'us' : 'op'); break;
       case 'oppchance': if (Math.random() < 0.58) this.feed(min, 'save', '', say(Narracao.SAVE), false, 'op'); else this.feed(min, 'opp', '', say(Narracao.OPP_MISS)); break;
       case 'uswaste': this.feed(min, 'us', '', say(Narracao.US_WASTE)); break;
+      case 'contra': this.feed(min, 'opp', '', say(Narracao.CONTRA_OPP)); break;
+      case 'fechado': this.feed(min, 'neutral', '', say(Narracao.FECHADO_US), false, 'us'); break;
+      case 'buraco': this.feed(min, 'opp', '', say(Narracao.BURACO[buraco] || Narracao.BURACO.MEI)); break;
     }
   }
-  /** Cartão com nome real: o 2º amarelo no mesmo jogador vira vermelho; expulso não é punido de novo; um vermelho por time. */
+  /**
+   * Cartão com nome real. O 2º amarelo no mesmo jogo vira vermelho (expulsão); expulso não é punido de novo e sai de campo:
+   * o time fica com um a menos (até 3 expulsões por time). No campeonato o cartão fica marcado no jogador (p.cj) para a
+   * tela de tática e para a disciplina: expulsão suspende da próxima rodada; o 3º amarelo acumulado (pendurado) também.
+   */
   cartao(min, side, direto) {
-    const m = this.match, cx = this.cx, L = this.lineups && this.lineups[side === 'opp' ? 'op' : 'us'], c = m.cards[side];
-    let nome, key;
-    if (L) { const p = Rnd.pick(L.tit.filter(q => q.slotPos !== 'GK' && !m.expulsos.has(q.nome))); nome = p.nomeFalado; key = side + p.nome; }
+    const m = this.match, cx = this.cx, L = this.lineups && this.lineups[side === 'opp' ? 'op' : 'us'], c = m.cards[side], t = side === 'us' ? 'us' : 'op';
+    let nome, key, p = null;
+    if (L) { p = Rnd.pick(L.tit.filter(q => q.slotPos !== 'GK' && !q.expulso)); if (!p) return; nome = p.nomeFalado; key = side + p.nome; }
     else { const n = Rnd.i(2, 11); nome = 'camisa ' + n; key = side + n; }
     if (m.expulsos.has(key)) return;
     const dois = !direto && m.amarelos.has(key);
     if (direto || dois) {
-      if (c.r) return;
+      if (c.r >= 3) return;
       m.expulsos.add(key); c.r++; if (dois) c.y++;
-      this.feed(min, 'red', '', cx.fmt(side === 'us' ? (dois ? Narracao.SECOND_US : Narracao.RED_US) : (dois ? Narracao.SECOND_OPP : Narracao.RED_OPP), { X: nome }), false, side === 'us' ? 'us' : 'op');
+      this.feed(min, 'red', '', cx.fmt(side === 'us' ? (dois ? Narracao.SECOND_US : Narracao.RED_US) : (dois ? Narracao.SECOND_OPP : Narracao.RED_OPP), { X: nome }) +
+        (L ? ' Está fora da próxima rodada.' : ''), false, t);
+      if (p) { p.expulso = true; p.cj = { ...(p.cj || {}), verm: min }; this.aposExpulsao(side, p, min); }
     } else {
       m.amarelos.add(key); c.y++;
-      this.feed(min, 'yellow', '', cx.fmt(Rnd.pick(Narracao.YELLOW), { X: nome, Y: cx.jog(side === 'us' ? 'op' : 'us', 'p') }), false, side === 'us' ? 'us' : 'op');
+      this.feed(min, 'yellow', '', cx.fmt(Rnd.pick(Narracao.YELLOW), { X: nome, Y: cx.jog(side === 'us' ? 'op' : 'us', 'p') }), false, t);
+      if (p) {
+        p.cj = { am: min };
+        if (p.amarelos >= 2) this.feed(min, 'yellow', '', cx.fmt(`${nome} estava pendurado: com o 3º amarelo, desfalca {${side === 'us' ? 'U' : 'O'}} na próxima rodada.`), false, t);
+      }
     }
   }
   /** Gol do adversário entre os seus lances: o autor é sorteado entre os titulares (atacantes têm mais chance). */
@@ -368,7 +516,8 @@ class TransmissaoMetodos {
     let A = cx.jog('op', 'm'); if (A === nome) A = cx.jog('op', 'a');
     m.away++; Som.gol(false);
     m.log.push({ min, text: S ? `Gol de ${S.nome}` : 'Gol do Adversário', us: false, scorer: S ? S.nome : null });
-    this.feed(min, 'oppgoal', '', `GOL DO ${cx.club('op').toUpperCase()}! ` + cx.fmt(Rnd.pick(Narracao.OPP_GOAL), { S: nome, A }));
+    const banco = L && Tactics.postura === 'ofensiva' && Rnd.chance(0.6) ? Narracao.OPP_GOAL_CONTRA : Narracao.OPP_GOAL;   // defesa exposta pela postura ofensiva
+    this.feed(min, 'oppgoal', '', `GOL DO ${cx.club('op').toUpperCase()}! ` + cx.fmt(Rnd.pick(banco), { S: nome, A }));
     this.flash('op'); const el = this.$('bc'); el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake');
   }
 
@@ -424,6 +573,8 @@ class TransmissaoMetodos {
     st.plays++; if (this.goalCounted) st.goals++; m.plays++;
     const R = this.playResult(skipped, before);
     m.minute = Math.min(CFG.MATCH_MIN - 1, m.minute + 1); m.clock = m.minute;                // o lance consome 1 minuto
+    this.cansacoDoLance();                                                                   // o que cada um correu no lance pesa na energia
+    this.minutoTatico(m.minute, true);                                                       // ...e 1 minuto de energia
     this.resetTimer = 0; this.view = 'broadcast'; this.setBroadcastUI(true);
     this.feed(m.minute, R.cls, R.ico, R.text, false, 'us');               // resultado do SEU lance
     m.phase = 'pause'; m.pauseT = CFG.BC_RESULT_PAUSE; m.after = null;
@@ -445,11 +596,18 @@ class TransmissaoMetodos {
     let rows = '<table><tr><th>Cenário</th><th>Lances</th><th>Gols</th></tr>';
     for (const k of Scenarios.TYPES) { const s = m.stats[k]; if (s) rows += `<tr><td>${Scenarios.LABEL[k]}</td><td>${s.plays}</td><td>${s.goals}</td></tr>`; }
     this.$('e-stats').innerHTML = m.plays ? rows + '</table>' : '';
-    this.$('e-log').innerHTML = m.log.length
+    const gols = m.log.length
       ? m.log.slice().sort((a, b) => a.min - b.min).map(e => `<div style="color:${e.us ? '#86efac' : '#fca5a5'}">${e.min}' — ${e.text}</div>`).join('')
       : 'Sem gols na partida.';
+    const subs = m.subsLog.map(e => `<div style="color:#9aa4ae">${e.min}' — ${e.text}</div>`).join('');
+    this.$('e-log').innerHTML = gols + subs;
     this.$('e-new').textContent = this.lineups ? 'Voltar à Central' : 'Jogar nova partida';
-    if (this.lineups && m.fx && !m.registrado) { m.registrado = true; this.registrarLiga(); }       // campeonato: resultado + simulação dos outros jogos
+    if (this.lineups && m.fx && !m.registrado) {                                                   // campeonato: resultado + simulação dos outros jogos
+      m.registrado = true;
+      const cartoes = this.cartoesDaPartida();                                                  // antes de limpar o estado da partida
+      Tatica.fimPartida(this.lineups.us, this.lineups.op); this.atualizarVazios(); Liga.salvarTatica();   // recuperação; rival volta inteiro
+      this.registrarLiga(cartoes);                                                              // resultado, suspensões e próxima rodada
+    }
     this.$('end').classList.add('show');
   }
   /** Estimativa por fórmula (só para testar equilíbrio): chance de gol por tipo de lance. */
@@ -476,7 +634,8 @@ class TransmissaoMetodos {
     if (m.phase === 'prompt') { this.dropPrompt(); resolve(m.cur, m.minute); }
     while (m.minute < CFG.MATCH_MIN - 1) {
       m.minute++; const min = m.minute;
-      if (min === 45) this.feed(45, 'info', '', `FIM DO PRIMEIRO TEMPO! ${this.placarTxt()}.`);
+      this.minutoTatico(min, true);
+      if (min === 45) { this.feed(45, 'info', '', `FIM DO PRIMEIRO TEMPO! ${this.placarTxt()}.`); if (this.lineups) { Tatica.intervalo(this.lineups.us); Tatica.intervalo(this.lineups.op); } }
       if (m.plan.length && m.plan[0].min <= min) resolve(m.plan.shift(), min); else this.minuteEvents(min, true);
     }
     m.minute = CFG.MATCH_MIN; m.clock = CFG.MATCH_MIN; this.finalWhistle(); m.phase = 'end'; this.endMatch();
@@ -486,11 +645,15 @@ class TransmissaoMetodos {
   }
   /** Chip de status (rodapé da transmissão) e painel retrátil com os números do time. */
   refreshStatus() {
-    const m = this.match, a = this.attr; if (!m) return; const c0 = m.cards;
+    const m = this.match, a = this.attr; if (!m) return;
     const atk = Math.round(a.force * 0.2 + a.curve * 0.2 + a.speed * 0.2 + a.dribble * 0.25 + a.pos * 0.15), def = Math.round(a.mark * 0.6 + a.reflex * 0.4);
-    this.$('bc-status').textContent = `${Tactics.forms.us} · Lances jogados ${m.plays}`;          // o total sorteado fica escondido (surpresa)
+    const L = this.lineups, P = Tatica.POSTURAS[Tactics.postura] || Tatica.POSTURAS.equilibrada, subs = this.tj ? this.tj.subs : 0;
+    const emCampo = `${11 - m.cards.us.r}x${11 - m.cards.opp.r}`;
+    this.$('bc-status').textContent = L ? `${Tactics.forms.us} · ${P.nome} · Subs ${subs}/${Tatica.MAX_SUBS}${m.cards.us.r || m.cards.opp.r ? ' · ' + emCampo : ''} · Lances ${m.plays}`
+                                        : `${Tactics.forms.us} · Lances jogados ${m.plays}`;          // o total sorteado fica escondido (surpresa)
     const c = m.cards;
     this.$('bc-stpanel').innerHTML = `<b>Seu time</b> ${Tactics.forms.us} × <b>Adv.</b> ${Tactics.forms.opp}<br>` +
+      (L ? `Postura <b>${P.nome}</b> • Energia média <b>${Tatica.resumo(L.us).energia}%</b> • Substituições <b>${subs}/${Tatica.MAX_SUBS}</b> • Em campo <b>${emCampo}</b><br>` : '') +
       `Seu ATAQUE <b>${atk}</b> × DEFESA adv. <b>${def}</b> • ATAQUE adv. <b>${a.oatk}</b> × Sua DEFESA <b>${a.mdef}</b><br>` +
       `Lances decisivos jogados: <b>${m.plays}</b> • Gols marcados: <b>${m.goalsUs}</b><br>` +
       `Cartões, seu time: ${c.us.y} amarelo(s), ${c.us.r} vermelho(s) · Adversário: ${c.opp.y} amarelo(s), ${c.opp.r} vermelho(s)`;
@@ -509,6 +672,7 @@ class TransmissaoMetodos {
     for (const bt of this.$('bc-speed').children) bt.classList.toggle('on', +bt.dataset.s === this.speed);
     this.$('bc-period').textContent = m.over || m.phase === 'final' || m.phase === 'end' ? 'FIM DE JOGO' : m.phase === 'prompt' || m.phase === 'play' ? ' SUA CHANCE'
                                     : m.phase === 'pause' && m.minute === 45 ? 'INTERVALO' : min < 45 ? '1º TEMPO' : '2º TEMPO';
+    this.$('bc-tat').disabled = !(this.lineups && !m.over && (m.phase === 'run' || m.phase === 'pause'));   // tática só com o relógio correndo ou no respiro
     this.refreshStatus();
   }
 }
@@ -520,7 +684,9 @@ const ICON = (() => {
   const flag = v('<path d="M6 21V4M6 5h11l-2.5 3.5L17 12H6"/>');
   return { us: ball, opp: ball, neutral: v('<path d="M5 12h14M13 6l6 6-6 6"/>'), usgoal: ball, oppgoal: ball, yellow: 'y', red: 'r', corner: flag, flag,
            save: v('<path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/>'), miss: v('<path d="M6 6l12 12M18 6L6 18"/>'),
-           info: v('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'), chance: v('<path d="M5 6l6 6-6 6M12 6l6 6-6 6"/>') };
+           info: v('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'), chance: v('<path d="M5 6l6 6-6 6M12 6l6 6-6 6"/>'),
+           sub: v('<path d="M7 20V5M3.5 8.5L7 5l3.5 3.5M17 4v15M13.5 15.5L17 19l3.5-3.5"/>'),
+           tat: v('<rect x="5" y="4" width="14" height="17" rx="1"/><path d="M9 4V2.5h6V4M9 10h6M9 14h6M9 18h3"/>') };
 })();
 /** Copia os métodos da transmissão para Game.prototype (mesmos descritores: getters e não-enumeráveis) e define Game.ICON. */
 function instalarTransmissao(Game) {

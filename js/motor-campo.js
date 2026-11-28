@@ -2,6 +2,7 @@ import { Aparencia, Visual, Renderer } from './render-sprites.js';
 import { Ctx } from './transmissao.js';
 import { Elenco } from './campeonato.js';
 import { Som } from './audio.js';
+import { Tatica } from './tatica.js';
 
 /* =============================================================================
    NEW STAR TREINEIROS — ETAPA 4 + BONECOS PIXEL ART (4B)
@@ -31,6 +32,11 @@ import { Som } from './audio.js';
    de fundo, segunda bola e bloco baixo). Cada lance sai de tabelas de equilíbrio numérico + bloco defensivo montado pela formação e é
    validado (impedimento, vulnerabilidade, buracos na linha) antes de começar. Escanteio: cruzamento no alto e cabeçada automática
    (Game.headerContest). Falta/escanteio/pênalti: adversários a no mínimo 9,15 m da bola (keepFromBall).
+
+   SISTEMA TÁTICO (tatica.js): a formação e a postura do seu time mudam QUEM aparece no lance e ONDE (Tactics.ESTILO e
+   Tactics.POSTURA: amplitude dos pontas, dupla de ataque próxima, alas projetados, mais ou menos gente na frente) e as
+   infiltrações dos companheiros. Cada jogador real em campo carrega fatores individuais de energia/improviso (fv = velocidade,
+   fd = drible, fm = marcação) que só escalam a corrida e os duelos dele; a física da bola não muda.
 
    Mundo virtual em px (16 px = 1 m; linha de gol em y=0); a câmera dinâmica segue o jogador e o
    canvas só escala a vista; assim a física NÃO muda com o tamanho da tela.
@@ -66,7 +72,13 @@ const CFG = {
   STRIKE_TIME_PARADA: 4,     // s para escolher o ponto de contato em bola parada (falta, escanteio, pênalti): sem pressão de desarme
   STRIKE_SLOWMO: 0.1,
   AIM_TIME: 2.5,
-  AIM_TIME_PARADA: 6,        // s para mirar em bola parada antes de a bola escapar (na bola rolando continua AIM_TIME)
+  AIM_TIME_PARADA: 6,
+  // RECOMPOSIÇÃO: adversário que estava fora do lance entra pela parte de baixo da tela e corre para pressionar o portador
+  RECOMP: { DEPOIS: 8,         // s de lance (bola rolando, após o 1º toque) até o 1º jogador voltar
+            RECUADO: 4,        // ... ou só 4 s se a bola fica recuada (antes do meio de campo, LINHA)
+            LINHA: 52.5 * 16,  // px do mundo a partir do gol: o meio de campo (52,5 m); daí para trás conta como "bola recuada"
+            SEGUNDO: 6,        // s depois do 1º para vir o 2º (máximo 2 por lance)
+            VEL_MIN: 6.0, VEL_MAX: 7.6 },   // m/s (pela Marcação do adversário): quem dispara para o gol escapa, quem toca para trás é alcançado        // s para mirar em bola parada antes de a bola escapar (na bola rolando continua AIM_TIME)
   DECIDE_TIME: 1.6,
 
   AIM_MARGIN: 175,            // px do mundo entre a bola e a borda da tela (espaço para puxar o estilingue; MAX_PULL = 150)
@@ -111,6 +123,7 @@ const AI = {
     REACH: 17, REACH_DIVE: 27,
     CATCH_MIN: 330, CATCH_MAX: 640,
     SAVE_Z: 2.0 * M,
+    NIVEL: 0.78,      // peso geral da habilidade dos goleiros (1 = original): o nível de cada goleiro continua o mesmo, só pesa menos
   },
   DEF: {
     HOME_Y: 16.5 * M + 1 * M,
@@ -189,6 +202,7 @@ const Util = {
   clamp: (v, a, b) => Math.max(a, Math.min(b, v)),
   lerp: (a, b, t) => a + (b - a) * t,
   lvl: v => Math.max(0, Math.min(1, (v - 1) / 98)),     // atributo 1..99 -> 0..1
+  lvlGol: v => Util.lvl(v) * AI.KEEPER.NIVEL,             // habilidade efetiva do goleiro (reflexo x peso geral)
   smooth(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); },
   wrapAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; },
   segDist(px, py, ax, ay, bx, by) {
@@ -235,12 +249,58 @@ const Physics = {
   },
 };
 
+/* ---------------------------- Fôlego do lance (momentâneo) ---------------------------- */
+/**
+ * FÔLEGO DO LANCE: barra momentânea (0–100%) de cada boneco que nasce cheia a cada lance e cai conforme ele CORRE.
+ *  - Gasto por segundo = GASTO × papel × coef × esforço^1.6, onde esforço = velocidade atual / velocidade máxima base.
+ *    Só conta o tempo simulado (na câmera lenta gasta devagar também).
+ *  - Papel: os ATACANTES (seu time, que conduz e se desmarca) cansam o dobro dos zagueiros (que guardam posição).
+ *  - coef: fôlego (atributo 1–99) e energia da partida — jogador de pouco fôlego ou já gasto na partida esvazia mais rápido.
+ *  - Andando ou parado (esforço < ESFORCO_RECUP) o jogador recupera o ar aos poucos.
+ *  - Abaixo de LIMIAR% a velocidade cai até PISO (−30% com a barra vazia); drible/marcação caem até −20% nos duelos.
+ *  - O que foi gasto no lance pesa um pouco na energia da partida (RESIDUO), só no campeonato (Game.cansacoDoLance).
+ */
+const FolegoLance = {
+  GASTO: 7,                  // %/s em corrida máxima (atacante, fôlego 50, energia cheia) → ~14 s de arrancada esvaziam a barra
+  PAPEL: { atk: 1, def: 0.5, recomp: 0.6 },
+  RECUP: 6,                  // %/s recuperados parado (menos andando)
+  ESFORCO_RECUP: 0.3,        // abaixo desta fração da velocidade máxima o jogador recupera em vez de gastar
+  LIMIAR: 50,                // a partir daqui (para baixo) a velocidade começa a cair
+  PISO: 0.7,                 // fator de velocidade com a barra vazia
+  DUELO: 0.2,                // perda máxima de drible/marcação nos duelos com a barra vazia
+  RESIDUO: 0.02,             // cada 1% gasto no lance tira 0,02% de energia da partida (barra inteira = −2%)
+  /** Multiplicador de gasto pelo atributo fôlego e pela energia da partida (sem jogador real: 1). */
+  coef(real) {
+    if (!real) return 1;
+    const f = Tatica.folego(real), en = Number.isFinite(real.energia) ? real.energia : 100;
+    return (1.4 - 0.8 * f / 100) * (1 + 0.8 * (1 - Util.clamp(en, 0, 100) / 100));
+  },
+  /** Fator de velocidade pela barra (1 acima do LIMIAR). */
+  fator(gas) { return gas >= this.LIMIAR ? 1 : Util.lerp(this.PISO, 1, gas / this.LIMIAR); },
+  /** Fator de duelo (drible de quem conduz / marcação de quem chega). */
+  duelo(e) { return 1 - this.DUELO * (1 - Util.clamp((e.gas ?? 100) / this.LIMIAR, 0, 1)); },
+  /** Zera a barra do boneco (início do lance). */
+  encher(e) { e.gas = 100; e.gasto = 0; e.fg = 1; if (!Number.isFinite(e.kGas)) e.kGas = 1; },
+  /** Um passo da física: sp = velocidade atual, ref = velocidade máxima base (sem cansaço), papel = 'atk'|'def'|'recomp'. */
+  atualizar(e, sp, ref, papel, h) {
+    const esf = Util.clamp(sp / Math.max(ref, 1), 0, 1.2);
+    if (esf > this.ESFORCO_RECUP) {
+      const g = this.GASTO * this.PAPEL[papel] * e.kGas * Math.pow(esf, 1.6) * h;
+      e.gas = Math.max(0, e.gas - g); e.gasto += g;
+    } else {
+      e.gas = Math.min(100, e.gas + this.RECUP * (1 - esf / this.ESFORCO_RECUP) * h / Math.max(e.kGas, 0.6));
+    }
+    e.fg = this.fator(e.gas);
+  },
+};
+
 /* -------------------------------- Atacante -------------------------------- */
 class Player {
   constructor(num, sx, sy) {
     this.num = num; this.sx = sx; this.sy = sy; this.tgt = { x: 0, y: 0 };
     this.visual = Aparencia.gerar('us', num);      // ETAPA 4B: aparência (pele, cabelo, barba, uniforme) — substituível por dados reais
     this.estadoAnim = Visual.novoEstado();         // ETAPA 4B: estado da animação (só leitura da física)
+    this.fv = 1; this.fd = 1;                      // SISTEMA TÁTICO: fator individual de velocidade / drible (energia + improviso)
     this.reset();
   }
   reset() {
@@ -253,10 +313,13 @@ class Player {
     this.pl = AI.DEF.HOME_Y; this.margin = 0; this.goalX = this.x; this.goalY = this.y;
     this.offT = 0; this.safeT = 0;   // tempo impedido / tempo "em alerta" depois de voltar para a posição legal
     this.decideT = Math.random() * 0.4; this.side = this.sx >= CFG.FIELD.w / 2 ? 1 : -1;
+    FolegoLance.encher(this);        // fôlego do lance: barra cheia a cada lance
   }
+  /** Velocidade máxima BASE (atributo Velocidade), sem cansaço nem ritmo: referência do esforço no fôlego do lance. */
+  baseSpeed(attr) { return (CFG.SPEED_MIN_MS + (CFG.SPEED_MAX_MS - CFG.SPEED_MIN_MS) * (attr.speed - 1) / 98) * CFG.M; }
   maxSpeed(attr) {
     const t = (attr.speed - 1) / 98;
-    return (CFG.SPEED_MIN_MS + (CFG.SPEED_MAX_MS - CFG.SPEED_MIN_MS) * t) * CFG.M * this.speedMul;
+    return (CFG.SPEED_MIN_MS + (CFG.SPEED_MAX_MS - CFG.SPEED_MIN_MS) * t) * CFG.M * this.speedMul * (this.fv || 1) * (this.fg || 1);   // fg: fôlego do lance (cai quando a barra passa da metade)
   }
   update(h, attr) {
     let dvx = 0, dvy = 0;
@@ -325,7 +388,7 @@ class Keeper {
     return { x: Util.clamp(x, cx - lim, cx + lim), y: yy };
   }
   onShot(game) {
-    const K = AI.KEEPER, t = Util.lvl(game.attr.reflex), b = game.ball, G = CFG.GOAL, cx = CFG.FIELD.w / 2;
+    const K = AI.KEEPER, t = Util.lvlGol(game.attr.reflex), b = game.ball, G = CFG.GOAL, cx = CFG.FIELD.w / 2;
     const lineY = this.y;
     const s = { x: b.x, y: b.y, z: b.z, vx: b.vx, vy: b.vy, vz: b.vz, spin: b.spin };
     let hit = null;
@@ -355,7 +418,7 @@ class Keeper {
     this.timer = Util.lerp(K.DELAY_MAX_MS, K.DELAY_MIN_MS, t) / 1000;
   }
   update(h, game) {
-    const K = AI.KEEPER, t = Util.lvl(game.attr.reflex), b = game.ball;
+    const K = AI.KEEPER, t = Util.lvlGol(game.attr.reflex), b = game.ball;
     if (this.stun > 0) this.stun -= h;
     if (this.palmCd > 0) this.palmCd -= h;
     if (this.state === 'react') {
@@ -412,6 +475,7 @@ class Defender {
     this.pos = s.pos; this.slot = s.slot; this.fixed = !!s.fixed;   // ETAPA 5: função tática; fixed = não segue a formação (barreira/marcadores de bola parada)
     this.visual = s.visual || Aparencia.gerar('adv', s.num);        // ETAPA 4B: aparência (uniforme do adversário); `visual` no spec = jogador real
     this.estadoAnim = Visual.novoEstado();
+    this.fv = 1; this.fm = 1;                                       // SISTEMA TÁTICO: fator individual de velocidade / marcação (energia + improviso)
     this.reset();
   }
   reset() {
@@ -419,6 +483,8 @@ class Defender {
     this.vx = 0; this.vy = 0; this.facing = Math.PI / 2;
     this.seed(this.sx, this.sy);
     this.markRef = null; this.tackleCd = 0; this.clearCd = 0; this.role = 'cover';
+    this.recomp = false;                           // true = jogador que voltou para recompor (entra por baixo e persegue a bola)
+    FolegoLance.encher(this);                      // fôlego do lance: barra cheia a cada lance
   }
   /** Posições \"percebidas\" iniciais (alvo da pressão, bola e atacante marcado). */
   seed(x, y) { this.px = this.bx = this.mx = this.zx = x; this.py = this.by = this.my = this.zy = y; }
@@ -432,9 +498,12 @@ class Defender {
  * Os lances são montados a partir dos slots: quem aparece no lance é escolhido pela formação e pela posição da bola
  * (nem sempre o meio-campo aparece). Em jogo, cada atacante-IA tem uma ZONA (elipse ao redor da posição da formação,
  * que acompanha a bola): fora dela a pontuação do espaço cai, então o ponta direito não vira ponta esquerdo.
+ * SISTEMA TÁTICO: ESTILO (por formação do seu time) e POSTURA (equilibrada/ofensiva/defensiva) ajustam essas posições.
  */
 const Tactics = {
   forms: { us: '4-3-3', opp: '4-4-2' },
+  postura: 'equilibrada',           // postura do SEU time (campeonato); treino e amistoso usam sempre 'equilibrada'
+  vazios: { us: new Set(), opp: new Set() },   // vagas de jogadores EXPULSOS ("função|lado"): ninguém aparece nelas nos lances
   FORMATIONS: {
     '4-4-2': [['LB', -.85, 20, 34], ['CB', -.3, 20, 26], ['CB', .3, 20, 26], ['RB', .85, 20, 34],
               ['LM', -.85, 38, 52], ['CM', -.28, 38, 46], ['CM', .28, 38, 46], ['RM', .85, 38, 52],
@@ -470,22 +539,51 @@ const Tactics = {
   NUM: { LB: [3], RB: [2], LWB: [3, 13], RWB: [2, 12], CB: [4, 5, 15], DM: [6, 16], CM: [8, 17, 18], AM: [10, 20],
          LM: [11, 14], RM: [7, 19], LW: [11], RW: [7], ST: [9, 19, 21] },
 
+  /**
+   * Como cada formação do SEU time ataca nos lances (por tipo de função):
+   *   amp   = multiplicador da abertura lateral da posição; depth = metros a mais à frente; aBonus = preferência extra para aparecer
+   *   no lance; wide = gosto por ficar colado na linha lateral; runners = tipos que passam a fazer ultrapassagem.
+   *   4-3-3: amplitude, pontas bem abertos. 4-4-2: dupla de ataque próxima, meio-campo compacto. 3-5-2: centro forte, alas projetados.
+   */
+  ESTILO: {
+    '4-3-3': { amp: { W: 1.12 }, aBonus: { W: 3 }, wide: 1.35 },
+    '4-4-2': { amp: { ST: 0.6, CM: 0.85, WM: 0.9 }, depth: { ST: -1 }, aBonus: { ST: 4, WM: 1 }, wide: 0.75 },
+    '3-5-2': { amp: { CM: 0.8, FB: 1.04 }, depth: { FB: 5, CM: 1 }, aBonus: { CM: 2, FB: 5, DM: 1 }, wide: 1.1, runners: ['FB'] },
+  },
+  /** Postura do SEU time nos lances: dy = metros que o bloco sobe (+) ou recua (-); na = atacantes a mais/menos; run = chance de infiltração. */
+  POSTURA: {
+    equilibrada: { dy: 0, na: 0, run: 1 },
+    ofensiva:    { dy: 3.5, na: 1, run: 1.5 },
+    defensiva:   { dy: -4, na: -1, run: 0.6 },
+  },
+  estilo() { return this.ESTILO[this.forms.us] || {}; },
+  post() { return this.POSTURA[this.postura] || this.POSTURA.equilibrada; },
+  /** Esse tipo de função faz ultrapassagem na formação atual? */
+  corre(tipo) { const E = this.estilo(); return this.RUNNERS.has(tipo) || !!(E.runners && E.runners.includes(tipo)); },
+
   // Preferência BASE por tipo (m de "bônus" na escolha de quem aparece no lance); cada cenário soma o seu.
   // Atacante: quem joga na frente aparece mais; zagueiros quase nunca. Defensor: a linha de trás aparece, atacantes do rival não.
   ABASE: { ST: 3, W: 3, AM: 2, WM: 2, CM: 0, DM: -2, FB: -5, CB: -12 },
   DBASE: { CB: 6, FB: 4, DM: 2, CM: 0, AM: -5, WM: -5, W: -10, ST: -12 },
   type(pos) { return this.TYPE[pos] || 'CM'; },
   slots(form) { return this.FORMATIONS[form].map(([pos, x, rd, ra]) => ({ pos, x, rd, ra })); },
+  /** Slots de quem está em campo (sem as vagas dos expulsos): com um a menos, o lance tem um jogador a menos daquele setor. */
+  emCampo(side) { const F = this.forms, vz = this.vazios[side]; return this.slots(side === 'us' ? F.us : F.opp).filter(s => !vz.has(s.pos + '|' + s.x)); },
   numFor(pos, used) {
     for (const n of this.NUM[pos]) if (!used.has(n)) { used.add(n); return n; }
     let n = 12; while (used.has(n)) n++; used.add(n); return n;
   },
 
-  /** Posição de formação de um ATACANTE (nosso time sobe: y menor = mais perto do gol). O bloco acompanha a bola. */
+  /**
+   * Posição de formação de um ATACANTE (nosso time sobe: y menor = mais perto do gol). O bloco acompanha a bola.
+   * O estilo da formação (abertura/profundidade de cada função) e a postura (bloco mais alto ou mais baixo) ajustam o lugar.
+   */
   attackHome(slot, ball, lineY) {
-    const W = CFG.FIELD.w, depth = slot.ra + 0.85 * ((105 - ball.y / M) - 52);
+    const W = CFG.FIELD.w, E = this.estilo(), t = this.type(slot.pos), P = this.post();
+    const depth = slot.ra + ((E.depth && E.depth[t]) || 0) + P.dy + 0.85 * ((105 - ball.y / M) - 52);
     const y = Util.clamp((105 - depth) * M, lineY + 1.2 * M, CFG.FIELD.bottom - 2 * M);   // nunca à frente da linha de impedimento
-    return { x: W / 2 + slot.x * 28 * M, y };
+    const x = W / 2 + slot.x * ((E.amp && E.amp[t]) || 1) * 28 * M;
+    return { x: Util.clamp(x, 3 * M, W - 3 * M), y };
   },
   /** Posição de formação do ADVERSÁRIO defendendo (gol em y=0). tac = {line, comp, lat, by0}: a linha desce quando a bola avança. */
   defendHome(slot, tac, ball) {
@@ -511,19 +609,26 @@ const Tactics = {
    * c: {bx,by (bola), na, nd, line (linha defensiva, px), comp (compactação 0..1), lat (abertura lateral),
    *     carrier:[posições que podem receber a bola], aBonus:{tipo:m}, dBonus:{tipo:m}}.
    * O 1º atacante é o portador (fica na bola); os demais são os que a formação coloca mais perto da ação.
+   * Postura ofensiva traz +1 atacante (sem quebrar o equilíbrio numérico do lance); defensiva, -1 (mínimo 2).
    */
   assemble(c) {
     const F = this.forms, ball = { x: c.bx, y: c.by }, tac = { line: c.line, comp: c.comp, lat: c.lat, by0: c.by };
+    const E = this.estilo(), P = this.post(), aBonus = { ...c.aBonus };
+    for (const k in (E.aBonus || {})) aBonus[k] = (aBonus[k] || 0) + E.aBonus[k];
+    const SA = this.emCampo('us'), SD = this.emCampo('opp');
+    let na = c.na + P.na;
+    if (P.na > 0 && na - c.nd > 1) na = c.na;
+    na = Util.clamp(na, Math.min(2, c.na), SA.length);
     const dist = e => Math.hypot(e.h.x - c.bx, e.h.y - c.by);
-    const A = this.slots(F.us).map(s => ({ slot: s, pos: s.pos, h: this.attackHome(s, ball, c.line) }));
+    const A = SA.map(s => ({ slot: s, pos: s.pos, h: this.attackHome(s, ball, c.line) }));
     const byDist = A.slice().sort((u, v) => dist(u) - dist(v));
     const car = A.filter(e => c.carrier.includes(e.pos)).sort((u, v) => dist(u) - dist(v))[0] || byDist[0];
-    const rest = A.filter(e => e !== car).map(e => ({ e, k: dist(e) / M - (this.ABASE[this.type(e.pos)] || 0) - (c.aBonus[this.type(e.pos)] || 0) }))
-                  .sort((u, v) => u.k - v.k).slice(0, c.na - 1).map(o => o.e);
+    const rest = A.filter(e => e !== car).map(e => ({ e, k: dist(e) / M - (this.ABASE[this.type(e.pos)] || 0) - (aBonus[this.type(e.pos)] || 0) }))
+                  .sort((u, v) => u.k - v.k).slice(0, na - 1).map(o => o.e);
     const ua = new Set();
     const attackers = [car, ...rest].map((e, i) => ({ pos: e.pos, slot: e.slot, num: this.numFor(e.pos, ua),
       x: i ? e.h.x : c.bx, y: i ? e.h.y : c.by }));
-    const D = this.slots(F.opp).map(s => ({ slot: s, pos: s.pos, h: this.defendHome(s, tac, ball) }));
+    const D = SD.map(s => ({ slot: s, pos: s.pos, h: this.defendHome(s, tac, ball) }));
     const pick = D.map(e => ({ e, k: dist(e) / M - (this.DBASE[this.type(e.pos)] || 0) - (c.dBonus[this.type(e.pos)] || 0) })).sort((u, v) => u.k - v.k).slice(0, c.nd).map(o => o.e);
     const ud = new Set();
     const defenders = pick.map(e => ({ pos: e.pos, slot: e.slot, num: this.numFor(e.pos, ud), x: e.h.x, y: e.h.y }));
@@ -531,19 +636,23 @@ const Tactics = {
     return { attackers, defenders, tac };
   },
 
-  /** Bola parada: posições já definidas pelo cenário; só atribui função/slot ao jogador da formação mais próximo de cada uma. */
+  /**
+   * Bola parada: posições já definidas pelo cenário; só atribui função/slot ao jogador da formação mais próximo de cada uma.
+   * Com expulsos, faltando gente para todas as posições, as últimas ficam vazias (o time realmente tem menos jogadores).
+   */
   fill(side, positions, c) {
-    const F = this.forms, ball = { x: c.bx, y: c.by }, tac = { line: c.line, comp: c.comp, lat: c.lat, by0: c.by };
-    const pool = this.slots(side === 'us' ? F.us : F.opp).map(s => ({ slot: s, pos: s.pos, taken: false,
+    const ball = { x: c.bx, y: c.by }, tac = { line: c.line, comp: c.comp, lat: c.lat, by0: c.by };
+    const pool = this.emCampo(side).map(s => ({ slot: s, pos: s.pos, taken: false,
       h: side === 'us' ? this.attackHome(s, ball, c.line) : this.defendHome(s, tac, ball) }));
     const used = new Set();
     return positions.map((p, i) => {
       let cand = pool.filter(e => !e.taken && (!(i === 0 && p.prefer) || p.prefer.includes(e.pos)));
       if (!cand.length) cand = pool.filter(e => !e.taken);
+      if (!cand.length) return null;                                            // não sobrou ninguém em campo para esta posição
       cand.sort((u, v) => Math.hypot(u.h.x - p.x, u.h.y - p.y) - Math.hypot(v.h.x - p.x, v.h.y - p.y));
       const e = cand[0]; e.taken = true;
       return { ...p, pos: e.pos, slot: e.slot, num: this.numFor(e.pos, used) };
-    });
+    }).filter(Boolean);
   },
 };
 
@@ -673,7 +782,7 @@ const Scenarios = {
     const t = Tactics.assemble({ bx, by, na, nd, line, comp: nd === 3 ? 0.6 : 0.5, lat: 0.8,
       carrier: ['CM', 'DM', 'AM', 'ST'], aBonus: { W: 6, ST: 5, AM: 3, WM: 4 }, dBonus: { CB: 8, FB: 4 } });
     Gen.tuck(t.defenders, bx, 0.15); Tactics.relax(t.defenders);
-    return { type: 'contra', name: nd === 3 ? 'CONTRA-ATAQUE • DEFESA SE RECOMPONDO' : 'CONTRA-ATAQUE RÁPIDO', sub: `${na} x ${nd} • espaço para correr, enfiar ou tabelar`, ...t,
+    return { type: 'contra', name: nd === 3 ? 'CONTRA-ATAQUE • DEFESA SE RECOMPONDO' : 'CONTRA-ATAQUE RÁPIDO', sub: `${t.attackers.length} x ${nd} • espaço para correr, enfiar ou tabelar`, ...t,
       holdY: 1e9, leash: 3, attract: null, setPiece: false, rules: { open: nd === 3 ? [0, 2] : [1, 3], minNear: 6 * M } };
   },
 
@@ -682,7 +791,7 @@ const Scenarios = {
     const cx = CFG.FIELD.w / 2, [na, nd] = Gen.pick([[[3, 3], 0.3], [[3, 4], 0.25], [[4, 4], 0.3], [[4, 3], 0.15]]);
     const t = Tactics.assemble({ bx: cx + Rnd.r(-12, 12) * M, by: Rnd.r(23, 27) * M, na, nd, line: Rnd.r(17, 19.5) * M, comp: 0.55, lat: 0.75,
       carrier: ['AM', 'CM', 'ST', 'LW', 'RW', 'LM', 'RM'], aBonus: { ST: 4, AM: 3, W: 3, WM: 2, CM: 1 }, dBonus: { CB: 7, FB: 5, DM: 3 } });
-    return { type: 'entrada', name: 'ATAQUE POSICIONAL', sub: `${na} x ${nd} • tabela, drible curto ou chute de fora`, ...t,
+    return { type: 'entrada', name: 'ATAQUE POSICIONAL', sub: `${t.attackers.length} x ${nd} • tabela, drible curto ou chute de fora`, ...t,
       holdY: 30 * M, attract: null, setPiece: false, rules: { open: [0, 2], gap: nd >= 4 ? 17 * M : 22 * M, minNear: 3.5 * M } };
   },
 
@@ -694,7 +803,7 @@ const Scenarios = {
       carrier: side < 0 ? ['LW', 'LM', 'LWB', 'LB'] : ['RW', 'RM', 'RWB', 'RB'],
       aBonus: { ST: 8, AM: 6, W: 5, WM: 4, CM: 2 }, dBonus: { CB: 8, FB: 5 } });
     Gen.tuck(t.defenders, bx, 0.2); Tactics.relax(t.defenders);
-    return { type: 'ponta', name: 'LANÇAMENTO NA PONTA', sub: `${na} x ${nd} • cruze para os atacantes na área`, ...t,
+    return { type: 'ponta', name: 'LANÇAMENTO NA PONTA', sub: `${t.attackers.length} x ${nd} • cruze para os atacantes na área`, ...t,
       holdY: 30 * M, attract: { x: cx, y: 9.5 * M, r: 6 * M }, setPiece: false, rules: { open: [0, 2], gap: 24 * M } };
   },
 
@@ -703,7 +812,7 @@ const Scenarios = {
     const cx = CFG.FIELD.w / 2, na = Rnd.chance(0.7) ? 3 : 2;
     const t = Tactics.assemble({ bx: cx + Rnd.r(-8, 8) * M, by: Rnd.r(21, 25) * M, na, nd: 5, line: Rnd.r(9, 10.5) * M, comp: 0.45, lat: 0.7,
       carrier: ['AM', 'CM', 'ST', 'LW', 'RW', 'LM', 'RM'], aBonus: { ST: 3, W: 4, AM: 3, WM: 3 }, dBonus: { CB: 10, FB: 8, DM: 5, CM: 3 } });
-    return { type: 'fechada', name: 'DEFESA FECHADA', sub: `${na} x 5 • retranca: chute de fora, bola alçada ou drible curto`, ...t,
+    return { type: 'fechada', name: 'DEFESA FECHADA', sub: `${t.attackers.length} x 5 • retranca: chute de fora, bola alçada ou drible curto`, ...t,
       holdY: 30 * M, shift: 0.6, leash: 2.2, attract: null, setPiece: false, rules: { open: [0, 1], minNear: 4 * M, maxDiff: 0 } };
   },
 
@@ -712,7 +821,7 @@ const Scenarios = {
     const cx = CFG.FIELD.w / 2, n = this.forceN || Rnd.i(5, 7);
     const t = Tactics.assemble({ bx: cx + Rnd.r(-10, 10) * M, by: Rnd.r(30, 34) * M, na: n, nd: n, line: Rnd.r(17, 19) * M, comp: 0.75, lat: 1,
       carrier: ['CM', 'AM', 'DM', 'LM', 'RM', 'ST'], aBonus: { ST: 3, AM: 3, W: 3, WM: 2, CM: 1 }, dBonus: { CB: 4, FB: 4, DM: 4, CM: 3 } });
-    return { type: 'posicional', name: 'JOGO POSICIONAL', sub: `${n} x ${n} • tenha paciência: troque passes e ache a brecha`, ...t,
+    return { type: 'posicional', name: 'JOGO POSICIONAL', sub: `${t.attackers.length} x ${n} • tenha paciência: troque passes e ache a brecha`, ...t,
       holdY: 1e9, leash: 1, attract: null, setPiece: false, rules: { open: [0, 2], gap: 20 * M } };
   },
 
@@ -722,7 +831,7 @@ const Scenarios = {
     const bx = cx + Rnd.r(-14, 14) * M, by = Rnd.r(40, 47) * M, line = Rnd.r(25, 30) * M;
     const t = Tactics.assemble({ bx, by, na, nd, line, comp: 0.55, lat: 0.8, carrier: ['CM', 'DM', 'AM'],
       aBonus: { ST: 8, W: 6, AM: 3, WM: 3 }, dBonus: { CB: 8, FB: 5, DM: 2 } });
-    return { type: 'costas', name: 'BOLA NAS COSTAS DA DEFESA', sub: `${na} x ${nd} • lançamento em profundidade, cuidado com o impedimento`, ...t,
+    return { type: 'costas', name: 'BOLA NAS COSTAS DA DEFESA', sub: `${t.attackers.length} x ${nd} • lançamento em profundidade, cuidado com o impedimento`, ...t,
       holdY: 34 * M, attract: { x: cx + Rnd.r(-8, 8) * M, y: line - 4 * M, r: 6 * M }, setPiece: false, rules: { open: [0, 2], gap: 22 * M, minNear: 8 * M } };
   },
 
@@ -733,7 +842,7 @@ const Scenarios = {
     const t = Tactics.assemble({ bx, by, na, nd, line: Rnd.r(21, 26) * M, comp: 0.75, lat: 1,
       carrier: ['CM', 'DM', 'AM', 'LM', 'RM', 'ST'], aBonus: { ST: 4, AM: 4, W: 4, WM: 3, CM: 2 }, dBonus: { CB: 5, FB: 5, DM: 3, CM: 3 } });
     Gen.jitter(t.defenders, 2.6, 3); Tactics.relax(t.defenders);
-    return { type: 'roubada', name: 'BOLA RECUPERADA NO ATAQUE', sub: `${na} x ${nd} • defesa desorganizada: aja rápido`, ...t,
+    return { type: 'roubada', name: 'BOLA RECUPERADA NO ATAQUE', sub: `${t.attackers.length} x ${nd} • defesa desorganizada: aja rápido`, ...t,
       holdY: 1e9, leash: 2, attract: null, setPiece: false, rules: { open: [1, 3], minNear: 3.8 * M, gap: 26 * M } };
   },
 
@@ -745,7 +854,7 @@ const Scenarios = {
       carrier: side < 0 ? ['LW', 'LM', 'LWB', 'LB'] : ['RW', 'RM', 'RWB', 'RB'],
       aBonus: { ST: 6, AM: 5, W: 4, WM: 3, CM: 3 }, dBonus: { CB: 6, FB: 6, DM: 3, CM: 2 } });
     Gen.tuck(t.defenders, bx, 0.45); Tactics.relax(t.defenders);
-    return { type: 'lado', name: 'SUPERIORIDADE PELO LADO', sub: `${na} x ${nd} • defesa deslocada: tabele ou cruze`, ...t,
+    return { type: 'lado', name: 'SUPERIORIDADE PELO LADO', sub: `${t.attackers.length} x ${nd} • defesa deslocada: tabele ou cruze`, ...t,
       holdY: 28 * M, attract: { x: cx, y: 10 * M, r: 7 * M }, setPiece: false, rules: { open: [1, 3], minNear: 4.5 * M } };
   },
 
@@ -775,7 +884,7 @@ const Scenarios = {
     let k = 0; t.defenders.forEach((d, i) => { if (Math.hypot(d.x - bx, d.y - by) < Math.hypot(t.defenders[k].x - bx, t.defenders[k].y - by)) k = i; });
     t.defenders[k].x = bx + Rnd.r(-3, 3) * M; t.defenders[k].y = by - Rnd.r(4.5, 6) * M;      // alguém na dividida, à frente da bola
     Tactics.relax(t.defenders);
-    return { type: 'rebote', name: 'SEGUNDA BOLA NA ENTRADA DA ÁREA', sub: `${na} x ${nd} • bola sobrou: chute de primeira ou toque rápido`, ...t,
+    return { type: 'rebote', name: 'SEGUNDA BOLA NA ENTRADA DA ÁREA', sub: `${t.attackers.length} x ${nd} • bola sobrou: chute de primeira ou toque rápido`, ...t,
       recv: { vx: Rnd.r(-70, 70), vy: -Rnd.r(100, 200), maxZ: 30, bounces: 1 },
       holdY: 1e9, leash: 1.6, attract: null, setPiece: false, rules: { open: [0, 2], minNear: 3.6 * M } };
   },
@@ -785,7 +894,7 @@ const Scenarios = {
     const cx = CFG.FIELD.w / 2, [na, nd] = Gen.pick([[[3, 4], 0.35], [[3, 5], 0.25], [[4, 5], 0.2], [[4, 4], 0.2]]);
     const t = Tactics.assemble({ bx: cx + Rnd.r(-10, 10) * M, by: Rnd.r(26, 30) * M, na, nd, line: Rnd.r(11, 14) * M, comp: 0.5, lat: 0.7,
       carrier: ['CM', 'AM', 'DM'], aBonus: { ST: 3, W: 4, AM: 3, WM: 3 }, dBonus: { CB: 10, FB: 8, DM: 5, CM: 3 } });
-    return { type: 'bloco', name: 'CHUTE DE FORA • BLOCO BAIXO', sub: `${na} x ${nd} • defesa recuada: bata de fora ou ache a brecha`, ...t,
+    return { type: 'bloco', name: 'CHUTE DE FORA • BLOCO BAIXO', sub: `${t.attackers.length} x ${nd} • defesa recuada: bata de fora ou ache a brecha`, ...t,
       holdY: 32 * M, shift: 0.6, leash: 2.2, attract: null, setPiece: false, rules: { open: [0, 2], gap: 16 * M, minNear: 5 * M } };
   },
 
@@ -890,7 +999,8 @@ const Scenarios = {
   /** Monta o lance do tipo pedido já validado pelo gerador (regras de futebol + vulnerabilidade). */
   make(type) {
     const s = Gen.gerar(() => this[type]());
-    s.tacLabel = `Seu ${Tactics.forms.us}  ×  Adv. ${Tactics.forms.opp}`;
+    const P = { ofensiva: '  •  Ofensiva', defensiva: '  •  Defensiva' }[Tactics.postura] || '';
+    s.tacLabel = `Seu ${Tactics.forms.us}${P}  ×  Adv. ${Tactics.forms.opp}`;
     return s;
   },
 };
@@ -926,6 +1036,7 @@ class Game {
     this.sinceRecv = 99; this.mode = 'match'; this.view = 'broadcast'; this.speed = 1; this.showAids = false; this.menuOpen = true; this.started = false; this.stash = null; this.trainStats = { plays: 0, goals: 0 };   // modos: 'match' | 'train'
     this.$ = id => document.getElementById(id);
     this.lineups = null; this.cx = new Ctx(); this.fora = false; this.fxAtual = null;   // CAMPEONATO: times reais da partida (null = treino/amistoso)
+    this.tj = null;                                                                    // SISTEMA TÁTICO: substituições da partida do campeonato
     this.newMatch();
 
     this.last = performance.now();
@@ -947,6 +1058,7 @@ class Game {
     this.defenders = spec.defenders.map(s => new Defender(s));
     this.holdY = spec.holdY; this.tac = spec.tac; this.setPiece = spec.setPiece ? {} : null;
     this.pressIdx = 0; this.pressAtt = null; this.stallTime = 0; this.pass = null;
+    this.lanceT = 0; this.recuoT = 0; this.recompN = 0; this.recompT = 0;   // relógio da recomposição (por lance)
     const b = this.ball, p = this.player;
     b.state = 'carried'; b.vx = b.vy = b.spin = 0; b.z = b.vz = 0;
     b.x = p.x; b.y = p.y - CFG.CARRY_DIST;
@@ -1007,11 +1119,44 @@ class Game {
     this.loadScenario(this.scn); this.showBanner();
   }
 
+  /* ----- Fôlego do lance ----- */
+  /**
+   * Atualiza a barra momentânea de cada boneco pela velocidade em que está correndo neste passo.
+   * Atacantes usam o papel 'atk' (cansam mais); zagueiros 'def'; quem voltou para recompor 'recomp'. Goleiro não entra.
+   */
+  folegoLance(h) {
+    const ref = this.attackers.length ? this.attackers[0].baseSpeed(this.attr) : 1;
+    for (const a of this.attackers) FolegoLance.atualizar(a, Math.hypot(a.vx, a.vy), ref, 'atk', h);
+    const D = AI.DEF, t = Util.lvl(this.attr.mark), C = CFG.RECOMP;
+    const refD = Util.lerp(D.SPEED_MIN, D.SPEED_MAX, t) * CFG.M, refR = Util.lerp(C.VEL_MIN, C.VEL_MAX, t) * CFG.M;
+    for (const d of this.defenders) FolegoLance.atualizar(d, Math.hypot(d.vx, d.vy), d.recomp ? refR : refD, d.recomp ? 'recomp' : 'def', h);
+  }
+  /**
+   * Fim do lance (campeonato): o que cada jogador real gastou de fôlego no lance pesa um pouco na energia da partida
+   * (barra inteira gasta = −2%). Chamado por afterPlay antes do desgaste do minuto.
+   */
+  cansacoDoLance() {
+    if (!this.lineups) return;
+    for (const e of [...this.attackers, ...this.defenders]) {
+      if (!e.real || !(e.gasto > 0) || !Number.isFinite(e.real.energia)) continue;
+      e.real.energia = Math.max(0, e.real.energia - e.gasto * FolegoLance.RESIDUO);
+      e.gasto = 0;
+    }
+  }
+
   /* ----- Campeonato: elenco real no lance, uniformes e placar ----- */
-  /** Dá a cada boneco do lance o titular real do slot correspondente (nome, camisa e aparência/uniforme do clube). Física intacta. */
+  /**
+   * Dá a cada boneco do lance o titular real do slot correspondente (nome, camisa e aparência/uniforme do clube) e os fatores
+   * individuais de energia/improviso (fv velocidade, fd drible, fm marcação). Física da bola intacta.
+   */
   aplicarElenco() {
     const L = this.lineups; if (!L) return;
-    const poe = (e, time) => { const p = Elenco.porSlot(time, e.pos, e.slot && e.slot.x); if (p) { e.real = p; e.num = p.num; e.visual = p.visual; } };
+    const poe = (e, time) => {
+      const p = Elenco.porSlot(time, e.pos, e.slot && e.slot.x); if (!p) return;
+      e.real = p; e.num = p.num; e.visual = p.visual;
+      e.fv = Tatica.relativo(p, time, 'velocidade'); e.fd = Tatica.relativo(p, time, 'drible'); e.fm = Tatica.relativo(p, time, 'marcacao');
+      e.kGas = FolegoLance.coef(p);             // fôlego do lance: pouco fôlego / energia baixa = barra esvazia mais rápido
+    };
     for (const a of this.attackers) poe(a, L.us);
     for (const d of this.defenders) poe(d, L.op);
     this.keeper.real = L.op.gk; this.keeper.visual = L.op.gk.visual;
@@ -1224,6 +1369,7 @@ class Game {
   }
   decideRun(a, t) {
     const C = AI.MATE, b = this.ball, W = CFG.FIELD.w, R = CFG.PLAYER_R, at = this.scn && this.scn.attract;
+    const E = Tactics.estilo(), P = Tactics.post();                // SISTEMA TÁTICO: estilo da formação e postura do seu time
     this.assignSides();
     const prof = a.slot ? Tactics.PROFILE[Tactics.type(a.pos)] : null;
     const hm = a.slot ? Tactics.attackHome(a.slot, b, this.offsideLineY()) : null;   // posição na formação (acompanha a bola)
@@ -1240,7 +1386,7 @@ class Game {
     const limY = a.pl + a.margin;
     const s = Util.smooth(C.MARGIN_FROM, C.MARGIN_TO, t);
     if (s > 0.5 && a.cool <= 0 && !this.attackers.some(o => o !== a && o.runT > 0) && (b.state === 'carried' || this.pass) && b.y - a.pl < C.RUN_BALL_MAX &&
-        Math.abs(a.y - limY) < C.RUN_NEAR && (!a.slot || Tactics.RUNNERS.has(Tactics.type(a.pos))) && Math.random() < C.RUN_CHANCE * s) {
+        Math.abs(a.y - limY) < C.RUN_NEAR && (!a.slot || Tactics.corre(Tactics.type(a.pos))) && Math.random() < C.RUN_CHANCE * P.run * s) {
       const depth = Util.lerp(C.RUN_DEPTH_MIN, C.RUN_DEPTH_MAX, Math.random());
       a.runT = Util.lerp(C.RUN_TIME_MIN, C.RUN_TIME_MAX, Math.random());
       a.margin = -depth;
@@ -1267,8 +1413,8 @@ class Game {
       if (hm) {                                          // ETAPA 5: zona da posição + tendências do papel
         const ell = Math.hypot((cx - hm.x) / (prof.rx * M), (cy - hm.y) / ((cy < hm.y ? prof.up : prof.dn) * M));
         s -= C.W_ZONE * (at ? 0.5 : 1) * Math.max(0, ell - 1);
-        if (prof.wide) s += C.W_WIDE * prof.wide * (1 - Util.clamp(Math.abs(cx - (hm.x < W / 2 ? 5.5 * M : W - 5.5 * M)) / (7 * M), 0, 1));
-        if (prof.box) s += C.W_BOX * (1 - Util.clamp(Math.hypot(cx - W / 2, cy - 11 * M) / (14 * M), 0, 1));
+        if (prof.wide) s += C.W_WIDE * prof.wide * (E.wide || 1) * (1 - Util.clamp(Math.abs(cx - (hm.x < W / 2 ? 5.5 * M : W - 5.5 * M)) / (7 * M), 0, 1));
+        if (prof.box) s += C.W_BOX * prof.box * (1 - Util.clamp(Math.hypot(cx - W / 2, cy - 11 * M) / (14 * M), 0, 1));
       }
       for (const o of this.attackers) {
         if (o === a) continue;
@@ -1443,7 +1589,8 @@ class Game {
    *  - BARREIRA (bola parada): fica fixa até a bola sair; ninguém pressiona o batedor.
    */
   updateDefense(h) {
-    const D = AI.DEF, t = Util.lvl(this.attr.mark), p = this.player, b = this.ball, ds = this.defenders;
+    this.recompor(h);                                       // pode trazer um adversário pela parte de baixo da tela
+    const D = AI.DEF, t = Util.lvl(this.attr.mark), p = this.player, b = this.ball, todos = this.defenders, ds = todos.filter(d => !d.recomp);
     const cx = CFG.FIELD.w / 2, R = CFG.PLAYER_R, pass = this.pass, inSet = !!this.setPiece;
     const pressAtt = pass ? pass.receiver : p;
     const F = b.state === 'carried' ? p : b;
@@ -1557,7 +1704,7 @@ class Game {
       if (!this.locked) {
         const dx = tx - d.x, dy = ty - d.y, dd = Math.hypot(dx, dy);
         if (dd > 3) {
-          const spd = Util.lerp(D.SPEED_MIN, D.SPEED_MAX, t) * CFG.M * mul * Util.clamp(dd / 40, 0.15, 1);
+          const spd = Util.lerp(D.SPEED_MIN, D.SPEED_MAX, t) * CFG.M * mul * (d.fv || 1) * (d.fg || 1) * Util.clamp(dd / 40, 0.15, 1);   // fv: zagueiro cansado/improvisado corre menos; fg: fôlego do lance
           dvx = dx / dd * spd; dvy = dy / dd * spd;
         }
       }
@@ -1568,14 +1715,16 @@ class Game {
       d.facing = Math.atan2(F.y - d.y, F.x - d.x);
     }
 
-    // Tentativa de desarme (só com a bola na condução; qualquer zagueiro que chegar perto)
+    this.moverRecomp(h, F);                                 // quem voltou para recompor: persegue a bola, sem formação nem coleira
+
+    // Tentativa de desarme (só com a bola na condução; qualquer zagueiro que chegar perto, inclusive quem voltou)
     if (b.state === 'carried' && !this.locked) {
-      for (const d of ds) {
+      for (const d of todos) {
         if (d.tackleCd > 0 || Math.hypot(d.x - p.x, d.y - p.y) > D.TACKLE) continue;
         d.tackleCd = D.TACKLE_CD; this.stallTime = 0; this.tackler = d;
         const mv = Math.hypot(p.vx, p.vy), still = mv < D.STALL_SPEED;
         const slowBonus = 0.3 * (1 - Util.clamp(mv / (0.5 * p.maxSpeed(this.attr)), 0, 1));
-        if (still || this.duel(this.attr.mark, this.attr.dribble, slowBonus)) {
+        if (still || this.duel(this.attr.mark * (d.fm || 1) * FolegoLance.duelo(d), this.attr.dribble * (p.fd || 1) * FolegoLance.duelo(p), slowBonus)) {   // marcação de quem chegou x drible de quem conduz
           const a = Math.atan2(d.y - p.y, d.x - p.x);
           b.state = 'free'; b.vx = Math.cos(a) * 130; b.vy = Math.sin(a) * 130; b.z = b.vz = 0; b.spin = 0;
           this.cooldown = 1; this.path = [];
@@ -1591,13 +1740,57 @@ class Game {
     // Goleiro sai nos pés do atacante que chega muito perto (duelo Reflexo x Drible)
     const k = this.keeper;
     if (b.state === 'carried' && !this.locked && k.stun <= 0 && Math.hypot(b.x - k.x, b.y - k.y) < 24) {
-      if (Math.hypot(p.vx, p.vy) < D.STALL_SPEED || this.duel(this.attr.reflex, this.attr.dribble, 0.1)) {
+      if (Math.hypot(p.vx, p.vy) < D.STALL_SPEED || this.duel(this.attr.reflex * AI.KEEPER.NIVEL, this.attr.dribble * (p.fd || 1) * FolegoLance.duelo(p), 0.1)) {
         b.state = 'held'; b.vx = b.vy = 0;
         this.finish('DEFENDEU!', '#67e8f9', 'Goleiro saiu e encaixou', 1.8);
       } else {
         k.stun = 1.0;
         this.toast = { text: 'DRIBLE NO GOLEIRO!', t: 1.0, color: '#86efac' };
       }
+    }
+  }
+
+  /**
+   * RECOMPOSIÇÃO: com a bola rolando há DEPOIS s (ou RECUADO s com a bola recuada), um adversário que estava fora do lance
+   * entra por BAIXO da tela (fora da vista) e corre para pressionar. Impede ficar trocando passes para trás para sempre.
+   * Só na partida, só com a bola rolando (bola parada e treino não têm).
+   */
+  recompor(h) {
+    const C = CFG.RECOMP, b = this.ball;
+    if (this.mode !== 'match' || this.setPiece || this.locked || !this.firstTouched || b.state === 'held' || this.recompN >= 2) return;
+    this.lanceT += h; this.recompT += h;
+    if (b.y > C.LINHA) this.recuoT += h;
+    const espera = this.recompN === 0 ? (this.recuoT >= C.RECUADO || this.lanceT >= C.DEPOIS) : this.recompT >= C.SEGUNDO;
+    if (!espera) return;
+    const R = this.renderer, baixo = R.cam.y + R.h / R.s / 2, F = b.state === 'carried' ? this.player : b;
+    const x = Util.clamp(F.x + Rnd.r(-90, 90), 2 * CFG.PLAYER_R, CFG.FIELD.w - 2 * CFG.PLAYER_R), y = Math.max(baixo + 30, F.y + 120);
+    // quem volta: um titular do adversário que ainda não está no lance (volante/meia de preferência)
+    const L = this.lineups && this.lineups.op, usados = new Set(this.defenders.map(d => d.real && d.real.nome));
+    const real = L ? L.tit.filter(q => q.slotPos !== 'GK' && !q.expulso && !usados.has(q.nome)).sort((a, z) => ({ DM: 0, CM: 1, ST: 2 }[a.slotPos] ?? 3) - ({ DM: 0, CM: 1, ST: 2 }[z.slotPos] ?? 3))[0] : null;
+    const num = real ? real.num : [5, 8, 10][this.recompN];
+    const d = new Defender({ num, x, y, pos: real ? real.slotPos : 'DM', slot: null, fixed: true, visual: real ? real.visual : undefined });
+    d.recomp = true; d.real = real || null; d.vy = -60; d.facing = -Math.PI / 2;
+    if (real) { d.fv = Tatica.relativo(real, L, 'velocidade'); d.fm = Tatica.relativo(real, L, 'marcacao'); d.kGas = FolegoLance.coef(real); }   // quem volta cansado chega mais devagar
+    this.defenders.push(d); this.recompN++; this.recompT = 0;
+  }
+  /** Movimento de quem voltou: vai direto no portador (ou no receptor do passe / na bola solta), sem formação nem coleira. */
+  moverRecomp(h, F) {
+    const C = CFG.RECOMP, t = Util.lvl(this.attr.mark), vmax = Util.lerp(C.VEL_MIN, C.VEL_MAX, t) * CFG.M;
+    for (const d of this.defenders) {
+      if (!d.recomp) continue;
+      const alvo = this.pass ? this.pass.receiver : F;
+      let dvx = 0, dvy = 0;
+      if (!this.locked) {
+        const dx = alvo.x - d.x, dy = alvo.y - d.y, dd = Math.hypot(dx, dy);
+        if (dd > 3) { const spd = vmax * (d.fv || 1) * (d.fg || 1) * Util.clamp(dd / 30, 0.2, 1); dvx = dx / dd * spd; dvy = dy / dd * spd; }
+      }
+      const k = 1 - Math.exp(-6 * h);
+      d.vx += (dvx - d.vx) * k; d.vy += (dvy - d.vy) * k;
+      d.x += d.vx * h; d.y += d.vy * h;
+      d.x = Util.clamp(d.x, CFG.PLAYER_R, CFG.FIELD.w - CFG.PLAYER_R);
+      if (d.tackleCd > 0) d.tackleCd -= h;
+      if (d.clearCd > 0) d.clearCd -= h;
+      d.facing = Math.atan2(alvo.y - d.y, alvo.x - d.x);
     }
   }
 
@@ -1620,7 +1813,7 @@ class Game {
     if (this.locked || b.state !== 'free' || k.state !== 'idle') return null;
     if (b.y > CFG.BOX.h || Math.abs(b.x - cx) > CFG.BOX.w / 2) return null;
     const tx = Util.clamp(b.x + b.vx * 0.35, R, CFG.FIELD.w - R), ty = Util.clamp(b.y + b.vy * 0.35, R, CFG.BOX.h);
-    const v = Util.lerp(K.TRACK_MIN, K.TRACK_MAX, Util.lvl(this.attr.reflex)) * CFG.M * 1.15;
+    const v = Util.lerp(K.TRACK_MIN, K.TRACK_MAX, Util.lvlGol(this.attr.reflex)) * CFG.M * 1.15;
     const kt = Math.hypot(tx - k.x, ty - k.y) / v;
     for (const a of this.attackers) {
       if (Math.hypot(tx - a.x, ty - a.y) / a.maxSpeed(this.attr) < kt * 1.1) return null;
@@ -1637,7 +1830,7 @@ class Game {
     const d = Math.hypot(b.x - k.x, b.y - k.y);
     if (d > reach || b.z > maxZ) return;
     const sp = Math.hypot(b.vx, b.vy);
-    if (sp <= Util.lerp(K.CATCH_MIN, K.CATCH_MAX, Util.lvl(this.attr.reflex))) {
+    if (sp <= Util.lerp(K.CATCH_MIN, K.CATCH_MAX, Util.lvlGol(this.attr.reflex))) {
       b.state = 'held'; b.vx = b.vy = b.vz = b.spin = 0; b.z = 0;
       this.finish('DEFENDEU!', '#67e8f9', 'Goleiro encaixou', 1.8);
     } else {
@@ -1692,6 +1885,7 @@ class Game {
     this.keeper.update(h, this);
     this.updateDefense(h);
     this.separateAll();
+    if (!this.locked) this.folegoLance(h);
     if (this.penaltyHold) this.keepOutOfBox();
     const p = this.player;
 
@@ -1740,7 +1934,7 @@ class Game {
     else if (this.aerialUp) { this.aerial = false; return; }      // a bola já caiu no chão sem ninguém alcançar
     if (b.z < H.Z_MIN || b.z > H.Z_MAX || b.vz >= 0) return;       // só na DESCIDA da bola, quando ela chega à altura da cabeça
     const cand = [], prox = d => 1 - 0.6 * (d / H.REACH);
-    const pos = Util.lvl(this.attr.pos), mark = Util.lvl(this.attr.mark), refl = Util.lvl(this.attr.reflex);
+    const pos = Util.lvl(this.attr.pos), mark = Util.lvl(this.attr.mark), refl = Util.lvlGol(this.attr.reflex);
     for (const a of this.attackers) {
       if (a === this.kicker) continue;                             // o batedor não cabeceia o próprio cruzamento
       const d = Math.hypot(a.x - b.x, a.y - b.y);
@@ -1956,4 +2150,4 @@ class Input {
 }
 
 
-export { Util, CFG, M, Tactics, Rnd, Scenarios, Game, Gen };
+export { Util, CFG, M, Tactics, Rnd, Scenarios, Game, Gen, FolegoLance };

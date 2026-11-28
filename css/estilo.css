@@ -296,6 +296,10 @@ body.liga #bc-cfgbtn{display:none}
 .tbl tr.me td.cl b{color:var(--gold)}
 .tbl tr.z-lib td.pos{border-left-color:var(--grass2)}.tbl tr.z-pre td.pos{border-left-color:var(--gold)}.tbl tr.z-rb td.pos{border-left-color:#f87171}
 .sg{display:none}
+/* artilharia: layout fixo — o nome fica com toda a sobra da linha (no auto layout a coluna de gols "roubava" a largura
+   e, no celular, o nome sumia em reticências) */
+.tbl.art{table-layout:fixed}
+.tbl.art td.pt{width:36px}
 .tbl.art td.sgc{text-align:left;font-family:var(--head);font-weight:600;letter-spacing:.06em;color:var(--mute);width:66px}.tbl.art td.sgc .strip2{margin-right:6px}
 .lg-leg{display:flex;gap:6px 12px;align-items:center;padding:8px 12px;font-family:var(--head);font-weight:600;font-size:11px;letter-spacing:.12em;color:var(--mute);text-transform:uppercase}
 .lg-leg i{display:inline-block;width:10px;height:10px;margin-right:-6px}
@@ -413,3 +417,183 @@ body.liga #bc-cfgbtn{display:none}
 .som-btn{min-width:86px;font-variant-numeric:tabular-nums}
 .som-btn.off{color:var(--mute)}
 @media (max-width:440px){.som-btn{min-width:0;padding:7px 8px;font-size:12px}}
+
+/* =====================================================================
+   SISTEMA TÁTICO — TÁTICA & ELENCO (Central, pré-jogo e transmissão)
+   Prancheta: campinho com as vagas da formação, cards chapados de 2 px, etiquetas de improviso amarelas/vermelhas,
+   barra de energia (verde / amarelo abaixo de 60% / vermelho abaixo de 35%).
+   ===================================================================== */
+/* Transmissão: botão TÁTICA / SUBSTITUIR (só no campeonato) e linhas de substituição / mudança tática */
+#bc-tat{display:none;white-space:nowrap}
+body.liga #bc-tat{display:inline-flex}
+.ev-sub,.ev-tat{border-left-color:var(--gold)}
+.ev-sub .ev-txt,.ev-tat .ev-txt{font-weight:700}
+.ev-sub.t-us .ev-txt{letter-spacing:.01em}
+
+/* Central: card resumido */
+.lg-grid{grid-template-areas:"next tab" "tat tab" "rod tab" "art tab"}
+.lg-grid:not(:has(.a-next)){grid-template-areas:"tat tab" "rod tab" "art tab"}
+.a-tat{grid-area:tat}
+.a-tat .btn{width:100%;margin-top:4px}
+.tt-mini{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.tt-mini div{background:var(--bg);border:2px solid var(--line);padding:6px 9px}
+.tt-mini span{display:block;font-family:var(--head);font-weight:600;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+.tt-mini b{font-family:var(--head);font-weight:700;font-size:19px;color:var(--ink);font-variant-numeric:tabular-nums}
+.tt-mini .warn{border-color:#b45309}.tt-mini .warn b{color:#fbbf24}
+
+/* Tela Tática & Elenco */
+.tt-ctl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px}
+.tt-seg{display:flex;width:100%}
+.tt-seg button{flex:1;padding:10px 6px;font-size:14px}
+.tt-d{margin:9px 0 0;font-size:12.5px;line-height:1.45;color:var(--mute)}
+.tt-sum{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin:0 0 12px}
+.tt-sum div{background:var(--card);border:2px solid var(--line);border-radius:3px;padding:6px 8px;text-align:center}
+.tt-sum b{display:block;font-family:var(--head);font-weight:700;font-size:22px;line-height:1.1;color:var(--gold);font-variant-numeric:tabular-nums}
+.tt-sum span{font-family:var(--head);font-weight:600;font-size:10px;letter-spacing:.14em;color:var(--mute)}
+.tt-sum .warn{border-color:#b45309}.tt-sum .warn b{color:#fbbf24}
+.tt-sum .bad{border-color:var(--red)}.tt-sum .bad b{color:#f87171}
+.tt-msg{min-height:40px;margin:0 0 12px;padding:9px 12px;background:var(--bg);border:2px solid var(--line);border-left:6px solid var(--line);font-size:13px;line-height:1.45;color:#cbd2d9}
+.tt-msg b{color:var(--gold)}
+.tt-msg.ok{border-left-color:var(--grass2)}.tt-msg.warn{border-left-color:var(--gold)}.tt-msg.err{border-left-color:var(--red);color:#fecaca}
+.tt-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.lg-card>h3 small{font-weight:600;font-size:10.5px;letter-spacing:.12em;color:var(--mute)}
+
+/* Campinho tático: seu gol embaixo */
+.tt-campo{position:relative;width:calc(100% - 24px);max-width:500px;margin:12px auto;aspect-ratio:5/7;border:2px solid rgba(255,255,255,.55);overflow:hidden;
+          background:repeating-linear-gradient(180deg,#1f7a40 0 12.5%,#23844a 12.5% 25%)}
+.tt-l{position:absolute;border:2px solid rgba(255,255,255,.45);pointer-events:none}
+.tt-l.meio{left:0;right:0;top:50%;height:0;border-width:2px 0 0}
+.tt-l.circ{left:50%;top:50%;width:26%;aspect-ratio:1;border-radius:50%;transform:translate(-50%,-50%)}
+.tt-l.area-a{left:22%;right:22%;top:-2px;height:13%}
+.tt-l.area-d{left:22%;right:22%;bottom:-2px;height:13%}
+.tt-slot{position:absolute;transform:translate(-50%,-50%);width:86px;display:flex;flex-direction:column;align-items:stretch;gap:2px;padding:4px 5px 5px;cursor:pointer;
+         text-align:left;color:var(--ink);background:var(--card);border:2px solid var(--shadow);outline:1px solid var(--line);outline-offset:-3px;border-radius:3px;
+         box-shadow:0 3px 0 var(--shadow);font-family:var(--body);z-index:1}
+.tt-slot:active{transform:translate(-50%,calc(-50% + 2px));box-shadow:0 1px 0 var(--shadow)}
+.tt-slot.on{outline:3px solid var(--gold);outline-offset:-1px;background:#262d34;z-index:2}
+.tt-slot.imp{border-color:#b45309;outline-color:#fbbf24}
+.tt-slot.grave{border-color:#7f1d1d;outline-color:#f87171}
+.tt-slot.on.imp,.tt-slot.on.grave{outline:3px solid var(--gold)}
+.tt-slot.exp{opacity:.55}
+.tt-slot.fit{box-shadow:0 0 0 3px var(--grass2),0 3px 0 var(--shadow)}
+.tt-top{display:flex;justify-content:space-between;align-items:center;font-family:var(--head);font-weight:700;font-size:10px;letter-spacing:.1em;color:var(--gold)}
+.tt-num{color:var(--mute);font-variant-numeric:tabular-nums}
+.tt-nm{font-family:var(--head);font-weight:700;font-size:12.5px;line-height:1.1;letter-spacing:.03em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tt-meta{display:flex;align-items:center;gap:4px;font-family:var(--head);font-weight:700;font-size:10.5px;font-variant-numeric:tabular-nums}
+.tt-ovr{color:#fff}.tt-ovr.down{color:#f87171}
+.tt-fol{margin-left:auto;color:var(--mute)}
+.tt-pos{font-style:normal;font-family:var(--head);font-weight:700;font-size:9.5px;letter-spacing:.08em;padding:0 3px;border:1px solid currentColor;line-height:1.35}
+.p-GOL{color:#eab308}.p-DEF{color:#4ade80}.p-MEI{color:#cbd2d9}.p-ATA{color:#f87171}
+.tt-en{display:block;height:5px;background:var(--bg);border:1px solid var(--line);position:relative;overflow:hidden}
+.tt-en i{position:absolute;left:0;top:0;bottom:0;background:var(--grass2)}
+.tt-en.baixa i{background:var(--gold)}.tt-en.crit i{background:var(--red)}
+.tt-imp{display:block;margin:2px -5px -5px;padding:1px 3px;background:#b45309;color:#fff;font-family:var(--head);font-weight:700;font-size:9px;letter-spacing:.06em;text-align:center;white-space:nowrap;overflow:hidden}
+.tt-slot.grave .tt-imp,.tt-slot.exp .tt-imp{background:var(--red)}
+
+/* Lista de reservas */
+.tt-res{max-height:680px;overflow-y:auto;overscroll-behavior:contain}
+.tt-rh,.tt-r{display:grid;grid-template-columns:40px minmax(0,1fr) 34px 100px;gap:8px;align-items:center;padding:7px 10px}
+.tt-rh{position:sticky;top:0;z-index:1;background:var(--card);border-bottom:2px solid var(--line);font-family:var(--head);font-weight:600;font-size:10.5px;letter-spacing:.12em;color:var(--mute)}
+.tt-rh span:nth-child(3){text-align:center}
+.tt-r{width:100%;text-align:left;cursor:pointer;color:var(--ink);background:transparent;border:0;border-bottom:1px solid var(--line);font-family:var(--body);font-size:13px}
+.tt-r:active{background:var(--bg)}
+.tt-r b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tt-r .c-ovr{font-family:var(--head);font-weight:700;font-variant-numeric:tabular-nums;text-align:center}
+.c-en{display:flex;align-items:center;gap:6px}.c-en .tt-en{flex:1}
+.c-en small{font-family:var(--head);font-weight:600;font-size:11px;color:var(--mute);min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
+.tt-r.on{background:#262d34;box-shadow:inset 4px 0 0 var(--gold)}
+.tt-r.fit{box-shadow:inset 4px 0 0 var(--grass2)}
+.tt-r.nofit b{color:#fbbf24}
+.tt-r.saiu,.tt-r[disabled]{opacity:.4;cursor:default}
+.tt-r .tag{grid-column:2 / -1;justify-self:start;font-family:var(--head);font-weight:700;font-size:9.5px;letter-spacing:.12em;padding:0 6px;border:1px solid var(--mute);color:var(--mute)}
+.tt-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px}
+.tt-leg{margin:0;flex:1 1 320px;font-size:12px;line-height:1.55;color:var(--mute)}
+.tt-leg b{color:var(--ink)}
+.kt-foot{flex-wrap:wrap}
+
+@media (max-width:900px){
+  .lg-grid{grid-template-areas:"next" "tat" "tab" "rod" "art"}
+  .lg-grid:not(:has(.a-next)){grid-template-areas:"tat" "tab" "rod" "art"}
+  .tt-grid{grid-template-columns:minmax(0,1fr)}
+  .tt-res{max-height:none}
+}
+@media (max-width:620px){
+  .tt-ctl{grid-template-columns:minmax(0,1fr)}
+  .tt-campo{width:calc(100% - 12px);margin:8px auto}
+  /* card compacto no celular: sem o "%" da energia (a barra já mostra) e etiquetas sem espaçamento extra */
+  .tt-slot{width:70px;padding:3px 4px 4px;gap:1px}
+  .tt-nm{font-size:10px;letter-spacing:0}
+  .tt-top{font-size:8.5px;letter-spacing:.04em}
+  .tt-meta{font-size:9.5px;gap:3px}
+  .tt-pos{font-size:8px;padding:0 2px;letter-spacing:0}
+  .tt-enp small{display:none}
+  .tt-imp{font-size:8px;letter-spacing:0;margin:2px -4px -4px}
+  .tt-rh,.tt-r{grid-template-columns:36px minmax(0,1fr) 28px 78px;gap:6px;padding:7px 8px}
+
+  #bc-tat{padding:8px 9px;font-size:12px}
+}
+@media (max-width:440px){
+  .lg-actions{flex-wrap:wrap}
+  .lg-actions .lg-play{flex:1 1 100%}                 /* Central no celular: Jogar partida ocupa a linha toda */
+}
+
+/* =====================================================================
+   DISCIPLINA — cartões na escalação (três símbolos diferentes para não confundir)
+     .pend : PENDURADO (2 amarelos acumulados em jogos diferentes) = dois cartões amarelos sobrepostos;
+     .cj   : cartão recebido NESTA partida = cartão inclinado dentro de uma etiqueta escura com borda branca + o minuto;
+     .tag.susp : SUSPENSO (cumpre a rodada) = etiqueta vermelha.
+   ===================================================================== */
+.tt-top{gap:3px}
+.tt-cards{display:inline-flex;align-items:center;gap:4px;margin-left:auto;margin-right:3px}
+.pend{display:inline-block;width:7px;height:10px;margin-left:3px;background:#facc15;border:1px solid #713f12;border-radius:1px;vertical-align:-1px;
+      box-shadow:-3px -2px 0 0 #fde047,-3px -2px 0 1px #713f12;flex:0 0 auto}
+.cj{display:inline-flex;align-items:center;gap:2px;padding:0 3px 0 2px;background:#0b0d0f;border:1px solid #f8fafc;border-radius:2px;
+    font-family:var(--head);font-weight:700;font-size:9px;line-height:1.3;color:#f8fafc;letter-spacing:0;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cj-c{display:inline-block;width:6px;height:9px;border-radius:1px;transform:rotate(12deg)}
+.cj-c.am{background:#facc15}.cj-c.verm{background:var(--red)}
+/* energia atual no card do titular (no lugar do fôlego) */
+.tt-enp{margin-left:auto;color:var(--grass2);font-variant-numeric:tabular-nums}
+.tt-enp.baixa{color:#fbbf24}.tt-enp.crit{color:#f87171}
+/* reservas: nome + ícones; suspenso */
+.tt-rn{display:flex;align-items:center;gap:5px;min-width:0}
+.tt-rn b{min-width:0}
+.tt-r .tag.susp{border-color:var(--red);color:#fca5a5}
+.tt-susp{color:#fca5a5;font-weight:600}
+.tt-leg .pend{margin:0 3px 0 4px}
+.tt-leg .cj{vertical-align:1px}
+@media (max-width:620px){
+  .cj{font-size:8px;padding:0 2px 0 1px}
+  .tt-cards{gap:3px;margin-right:2px}
+}
+
+/* =====================================================================
+   FICHA DO JOGADOR (Tática & Elenco): último jogador tocado. Altura fixa no desktop para a lista não pular.
+   ===================================================================== */
+.tt-ficha{margin:0 0 12px;min-height:148px}
+.tt-ficha h3{display:flex;align-items:center;gap:8px}
+.tt-ficha h3 small{margin-left:auto}
+.tt-fi-x{width:26px;height:26px;margin-left:6px;padding:0;line-height:1;font-size:18px;color:var(--mute);background:transparent;
+         border:2px solid var(--line);cursor:pointer}
+.tt-fi-x:hover{color:var(--ink);border-color:var(--mute)}
+.tt-fi-dica{margin:0;padding:14px 14px 16px;font-size:13px;color:var(--mute)}
+.tt-fi{display:grid;grid-template-columns:minmax(150px,1fr) auto minmax(0,2.6fr);gap:16px;align-items:center;padding:12px 14px}
+.tt-fi-id{display:flex;flex-direction:column;gap:4px;min-width:0}
+.tt-fi-id .tt-pos{align-self:flex-start}
+.tt-fi-id b{font-family:var(--head);font-size:18px;font-weight:700;line-height:1.15;overflow:hidden;text-overflow:ellipsis}
+.tt-fi-id span{font-size:12px;color:var(--mute)}
+.tt-fi-imp{color:#fbbf24 !important;font-weight:600}
+.tt-fi-ovr{display:flex;flex-direction:column;align-items:center;padding:6px 12px;border:2px solid var(--line);background:var(--bg)}
+.tt-fi-ovr b{font-family:var(--head);font-size:30px;font-weight:700;line-height:1;color:var(--gold);font-variant-numeric:tabular-nums}
+.tt-fi-ovr span{font-family:var(--head);font-size:10px;letter-spacing:.14em;color:var(--mute)}
+.tt-fi-ovr small{margin-top:3px;font-size:10.5px;color:#fbbf24;white-space:nowrap}
+.tt-fi-at{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px}
+.tt-fa{display:grid;grid-template-columns:104px minmax(0,1fr) 24px 22px;gap:8px;align-items:center;font-size:12px}
+.tt-fa > span:first-child{color:#cbd2d9;white-space:nowrap}
+.tt-fa b{font-family:var(--head);font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+.tt-fa small{font-size:10.5px;color:#fbbf24;font-variant-numeric:tabular-nums}
+.tt-fb{display:block;height:6px;background:var(--bg);border:1px solid var(--line);position:relative;overflow:hidden}
+.tt-fb i{position:absolute;left:0;top:0;bottom:0}
+.tt-fb.a i{background:var(--grass2)}.tt-fb.b i{background:#84cc16}.tt-fb.c i{background:var(--gold)}.tt-fb.d i{background:#f97316}
+@media (max-width:900px){ .tt-fi{grid-template-columns:minmax(0,1fr) auto} .tt-fi-at{grid-column:1 / -1} }
+@media (max-width:620px){ .tt-fi-at{grid-template-columns:minmax(0,1fr)} .tt-ficha{min-height:0} }
+@media (max-width:440px){ .tt-fa{grid-template-columns:92px minmax(0,1fr) 22px 20px} }

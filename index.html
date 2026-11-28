@@ -152,6 +152,8 @@
   <div id="bc-foot">
     <div id="bc-live">AO VIVO</div>
     <button id="bc-status" type="button" title="Status do time">Status</button>
+    <!-- Campeonato: abre Tática & Elenco com o relógio pausado (substituições, formação e postura) -->
+    <button id="bc-tat" class="btn sm" type="button"><svg class="i" viewBox="0 0 24 24"><path d="M7 20V5M3.5 8.5L7 5l3.5 3.5M17 4v15M13.5 15.5L17 19l3.5-3.5"/></svg> Tática / Substituir</button>
     <button id="bc-cfgbtn" class="btn alt sm" type="button" aria-expanded="false"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg> Config</button>
   </div>
   <!-- Fim de jogo (90'): resumo rápido -->
@@ -172,7 +174,7 @@
 <!-- ESCOLHA DO CLUBE (primeira vez) -->
 <div id="pick" class="scr">
   <div class="lg-wrap">
-    <div class="pk-top"><button type="button" class="btn alt sm pk-menu" data-a="menu">Menu</button><h2>Escolha seu <span>clube</span></h2><p>Brasileirão Série A · 38 rodadas, turno e returno, todos contra todos. Só os 11 titulares de cada clube entram em campo.</p></div>
+    <div class="pk-top"><button type="button" class="btn alt sm pk-menu" data-a="menu">Menu</button><h2>Escolha seu <span>clube</span></h2><p>Brasileirão Série A · 38 rodadas, turno e returno, todos contra todos. Você monta a escalação, a formação e a postura do seu time em Tática &amp; Elenco.</p></div>
     <div id="pk-body"><p class="lg-msg">Carregando elencos do Brasileirão...</p></div>
   </div>
   <div class="pk-foot"><span id="pk-sel"></span><button id="pk-go" class="btn" type="button" disabled>Iniciar campeonato</button></div>
@@ -184,6 +186,9 @@
 <!-- CENTRAL DO CAMPEONATO -->
 <div id="liga" class="scr" aria-live="polite"></div>
 
+<!-- TÁTICA & ELENCO (Central, pré-jogo e durante a transmissão) -->
+<div id="tatica" class="scr" aria-live="polite"></div>
+
 <div id="menu">
   <div class="card">
     <div class="brand">
@@ -192,7 +197,7 @@
     </div>
     <div class="sub">Protótipo para teste</div>
     <button id="m-cont" class="mbtn" type="button" style="display:none"><b id="m-cont-t">Continuar</b><span>Volta de onde você parou.</span></button>
-    <button id="m-liga" class="mbtn" type="button" aria-expanded="false" aria-controls="m-liga-op"><b>Campeonato Brasileiro</b><span>Série A com 38 rodadas contra os 20 clubes. Central com classificação e placar da rodada; os outros jogos são simulados quando você termina o seu.</span></button>
+    <button id="m-liga" class="mbtn" type="button" aria-expanded="false" aria-controls="m-liga-op"><b>Campeonato Brasileiro</b><span>Série A com 38 rodadas contra os 20 clubes. Central com classificação, placar da rodada e Tática &amp; Elenco (escalação, formação, postura, energia e substituições); os outros jogos são simulados quando você termina o seu.</span></button>
     <div id="m-liga-op" class="msub" hidden>
       <button id="m-liga-cont" class="mbtn" type="button"><b>Continuar campeonato</b><span id="m-liga-info"></span></button>
       <button id="m-liga-novo" class="mbtn" type="button"><b>Novo campeonato</b><span>Escolha um clube e comece da 1ª rodada.</span></button>
@@ -212,6 +217,7 @@
         <li><b>Passe:</b> se a linha de mira passa perto de um companheiro, aparece um anel azul nele. Vermelho = impedido.</li>
         <li><b>Chute com efeito:</b> depois de soltar, toque no ponto da bola: embaixo levanta, nos lados faz curva, em cima rasteira.</li>
         <li><b>Companheiros:</b> se movem sozinhos procurando espaço e respeitando o impedimento. A defesa e o goleiro também são controlados pelo jogo.</li>
+        <li><b>Tática (campeonato):</b> escale os 11, escolha 4-3-3, 4-4-2 ou 3-5-2 e a postura. Jogador fora de posição rende menos; cansado também. Na transmissão, TÁTICA / SUBSTITUIR pausa o relógio: até 5 substituições.</li>
       </ul>
     </details>
     <div class="foot">Funciona no PC (mouse) e no celular (toque). Use o botão Menu para voltar aqui.</div>
