@@ -6,7 +6,7 @@ import { Som } from './audio.js';
 
 /* =============================================================================
    SISTEMA TÁTICO DO CAMPEONATO
-     Tatica : REGRAS, sem DOM. Vagas de cada formação (4-3-3, 4-4-2, 3-5-2), escalação automática, penalidade por
+     Tatica : REGRAS, sem DOM. Vagas de cada formação (4-3-3, 4-4-2, 4-2-3-1, 4-1-4-1, 3-5-2, 3-4-3, 5-3-2), escalação automática, penalidade por
               improviso fora de posição (inclusive dentro da defesa: LD, LE e ZAG, pelo campo posicaoDetalhada do JSON), fôlego/energia (desgaste por minuto e recuperação entre rodadas), postura
               (Equilibrada / Ofensiva / Defensiva), atributos EFETIVOS usados pela simulação minuto a minuto e pelos
               lances no campo, e (de)serialização do estado tático no save do campeonato (localStorage).
@@ -44,8 +44,12 @@ const DETALHADAS = ['GOL', 'ZAG', 'LD', 'LE', 'MEI', 'ATA'];
 const VAGA_DET = { LB: 'LE', RB: 'LD', CB: 'ZAG' };
 /** Alas e meias abertos (vagas de MEI): o lateral do MESMO lado faz a função quase sem perda. */
 const LADO_ALA = { LWB: 'LE', LM: 'LE', RWB: 'LD', RM: 'LD' };
-/** Rendimento dentro da defesa fora da posição detalhada, e do lateral na ala do seu lado. */
-const FATOR_DET = { LATERAL_TROCADO: 0.9, LATERAL_ZAGUEIRO: 0.85, LATERAL_NA_ALA: 0.95 };
+/**
+ * Rendimento dentro da defesa fora da posição detalhada, e do lateral na ala do seu lado.
+ * LATERAL_NA_ALA = formações de 4 ou 5 defensores (a ala é do meio-campo: −5% para o lateral).
+ * LATERAL_NA_ALA3 = formações de 3 zagueiros: a ala É a função do lateral (e do meia aberto), sem penalidade.
+ */
+const FATOR_DET = { LATERAL_TROCADO: 0.9, LATERAL_ZAGUEIRO: 0.85, LATERAL_NA_ALA: 0.95, LATERAL_NA_ALA3: 1 };
 /** Ordem de exibição na lista de reservas. */
 const ORDEM_DET = ['GOL', 'ZAG', 'LD', 'LE', 'DEF', 'MEI', 'ATA'];
 /** Atributos mostrados na ficha do jogador (Tática & Elenco), na ordem do JSON. */
@@ -55,14 +59,18 @@ const FICHA_ATTR = [['forca', 'Força'], ['curva', 'Curva'], ['velocidade', 'Vel
 const ENERGIA_ATTR = new Set(['velocidade', 'drible', 'marcacao', 'reflexo']);
 
 const Tatica = {
-  FORMACOES: ['4-3-3', '4-4-2', '3-5-2'],
+  FORMACOES: ['4-3-3', '4-4-2', '4-2-3-1', '4-1-4-1', '3-5-2', '3-4-3', '5-3-2'],
   PADRAO: '4-3-3',
   MAX_SUBS: 5,
   DESGASTE: 0.58,                 // % de energia por minuto de um jogador de fôlego médio na postura equilibrada (antes do fator de fôlego)
   DESC_FORM: {
     '4-3-3': '1 GOL, 4 DEF, 3 MEI, 3 ATA. Amplitude: os pontas jogam bem abertos, colados na linha lateral, e atacam o espaço.',
     '4-4-2': '1 GOL, 4 DEF, 4 MEI, 2 ATA. Dupla de ataque próxima e meio-campo compacto, com os meias abertos mais por dentro.',
-    '3-5-2': '1 GOL, 3 DEF, 5 MEI, 2 ATA. Presença central forte e alas que se projetam pelos lados e fazem ultrapassagens.',
+    '3-5-2': '1 GOL, 3 DEF, 5 MEI, 2 ATA. Presença central forte e alas que se projetam pelos lados e fazem ultrapassagens. As alas aceitam laterais ou meias, sem penalidade.',
+    '4-2-3-1': '1 GOL, 4 DEF, 5 MEI, 1 ATA. Dois volantes protegem a defesa e o meia de ligação joga atrás de um centroavante isolado. Pontas abertos pelo meio-campo.',
+    '4-1-4-1': '1 GOL, 4 DEF, 5 MEI, 1 ATA. Um volante de proteção e quatro meias em linha, com um único atacante. Time compacto, que chega ao ataque com os meias.',
+    '3-4-3': '1 GOL, 3 DEF, 4 MEI, 3 ATA. Ataque com três e meias abertos que ocupam o corredor inteiro. As alas aceitam laterais ou meias, sem penalidade; a defesa fica exposta.',
+    '5-3-2': '1 GOL, 5 DEF, 3 MEI, 2 ATA. Cinco na defesa, com alas que apoiam pelos lados; time fechado que chega menos ao ataque. Aqui as alas são vagas de meio-campo: o lateral rende 5% a menos.',
   },
   /**
    * Postura tática. lances = multiplicador dos lances jogáveis do seu time; golContra = chance de gol do rival nos minutos
@@ -102,8 +110,12 @@ const Tatica = {
   slots(form) {
     let s = this._slots.get(form);
     if (!s) {
-      s = [{ key: 'GK|0', pos: 'GK', x: 0, rd: 4, vaga: 'GOL', rot: 'GOL' },
-           ...Tactics.FORMATIONS[form].map(([pos, x, rd]) => ({ key: pos + '|' + x, pos, x, rd, vaga: VAGA[pos] || 'MEI', rot: Tactics.LABEL[pos] || pos }))];
+      const f = Tactics.FORMATIONS[form];
+      // Formação de 3 defensores (3-5-2, 3-4-3): as alas são vagas de lateral-meia, sem penalidade. Com 4 ou 5 defensores (o 5-3-2
+      // também tem 3 zagueiros, mais 2 alas na defesa), a ala segue sendo do meio-campo e o lateral rende menos.
+      const tres = form.split('-')[0] === '3';
+      s = [{ key: 'GK|0', pos: 'GK', x: 0, rd: 4, vaga: 'GOL', rot: 'GOL', ala3: false },
+           ...f.map(([pos, x, rd]) => ({ key: pos + '|' + x, pos, x, rd, vaga: VAGA[pos] || 'MEI', rot: Tactics.LABEL[pos] || pos, ala3: tres && !!LADO_ALA[pos] }))];
       this._slots.set(form, s);
     }
     return s;
@@ -141,8 +153,9 @@ const Tatica = {
    * Fator de rendimento do jogador p numa vaga (grupo `vaga`, função `slotPos`).
    * Grupos diferentes: as regras de sempre (fatorImprov), exceto o lateral na ala/meia aberto do seu lado (−5%).
    * Dentro da defesa: lateral do outro lado −10%; lateral de zagueiro ou zagueiro de lateral −15%.
+   * ala3 = a vaga é ala de uma formação com 3 zagueiros: o lateral do mesmo lado joga ali sem perda (como o meia).
    */
-  fator(p, vaga, slotPos) {
+  fator(p, vaga, slotPos, ala3 = false) {
     if (!vaga) return 1;
     const d = this.det(p);
     if (p.posicao === vaga) {
@@ -150,10 +163,10 @@ const Tatica = {
       if (!dv || !d || d === dv) return 1;
       return d !== 'ZAG' && dv !== 'ZAG' ? FATOR_DET.LATERAL_TROCADO : FATOR_DET.LATERAL_ZAGUEIRO;
     }
-    if (p.posicao === 'DEF' && vaga === 'MEI' && d && LADO_ALA[slotPos] === d) return FATOR_DET.LATERAL_NA_ALA;
+    if (p.posicao === 'DEF' && vaga === 'MEI' && d && LADO_ALA[slotPos] === d) return ala3 ? FATOR_DET.LATERAL_NA_ALA3 : FATOR_DET.LATERAL_NA_ALA;
     return this.fatorImprov(p.posicao, vaga);
   },
-  improv(p) { return this.fator(p, p.vaga, p.slotPos); },
+  improv(p) { return this.fator(p, p.vaga, p.slotPos, p.slotAla3); },
   /** Etiqueta do alerta de improviso (null = está na posição). grave = vermelho; senão, amarelo. */
   rotuloImprov(p) {
     const f = this.improv(p); if (f >= 1) return null;
@@ -205,11 +218,11 @@ const Tatica = {
   /* ---------------------------- Escalação do time ---------------------------- */
   /** Coloca cada jogador do mapa (chave da vaga -> jogador) na sua vaga e recalcula tudo o que depende da escalação. */
   escalar(L, form, mapa) {
-    for (const p of L.elenco) { p.slotKey = null; p.slotPos = null; p.vaga = null; }
+    for (const p of L.elenco) { p.slotKey = null; p.slotPos = null; p.vaga = null; p.slotAla3 = false; }
     L.form = form; L.slots = new Map(); L.tit = [];
     for (const s of this.slots(form)) {
       const p = mapa.get(s.key);
-      p.slotKey = s.key; p.slotPos = s.pos; p.vaga = s.vaga;
+      p.slotKey = s.key; p.slotPos = s.pos; p.vaga = s.vaga; p.slotAla3 = s.ala3;
       L.slots.set(s.key, p); L.tit.push(p);
     }
     L.gk = L.slots.get('GK|0');
@@ -237,12 +250,12 @@ const Tatica = {
     const tira = p => livres.splice(livres.indexOf(p), 1);
     const melhorDe = (s, lst) => lst.slice().sort((a, b) => valor(s, b) - valor(s, a))[0];
     for (const s of this.ordem(form)) {
-      const c = livres.filter(p => this.fator(p, s.vaga, s.pos) === 1);        // na posição (inclusive o lado do lateral)
+      const c = livres.filter(p => this.fator(p, s.vaga, s.pos, s.ala3) === 1);        // na posição (inclusive o lado do lateral)
       if (c.length) { const p = melhorDe(s, c); tira(p); mapa.set(s.key, p); } else pend.push(s);
     }
     for (const s of pend) {
-      const best = Math.max(...livres.map(p => this.fator(p, s.vaga, s.pos)));
-      const p = melhorDe(s, livres.filter(q => this.fator(q, s.vaga, s.pos) === best)); tira(p); mapa.set(s.key, p);
+      const best = Math.max(...livres.map(p => this.fator(p, s.vaga, s.pos, s.ala3)));
+      const p = melhorDe(s, livres.filter(q => this.fator(q, s.vaga, s.pos, s.ala3) === best)); tira(p); mapa.set(s.key, p);
     }
     return mapa;
   },
@@ -262,8 +275,8 @@ const Tatica = {
     const mapa = new Map(L.slots), livres = L.elenco.filter(p => !p.slotKey && !p.suspenso), trocas = [];
     for (const sai of fora) {
       const s = this.slots(L.form).find(q => q.key === sai.slotKey); if (!livres.length) break;
-      const best = Math.max(...livres.map(p => this.fator(p, s.vaga, s.pos)));
-      const entra = livres.filter(p => this.fator(p, s.vaga, s.pos) === best).sort((a, b) => this.valorVaga(s, b) - this.valorVaga(s, a))[0];
+      const best = Math.max(...livres.map(p => this.fator(p, s.vaga, s.pos, s.ala3)));
+      const entra = livres.filter(p => this.fator(p, s.vaga, s.pos, s.ala3) === best).sort((a, b) => this.valorVaga(s, b) - this.valorVaga(s, a))[0];
       livres.splice(livres.indexOf(entra), 1); mapa.set(s.key, entra); trocas.push({ sai, entra });
     }
     this.escalar(L, L.form, mapa);
@@ -456,7 +469,7 @@ const Painel = {
                          : `PRÉ-JOGO · ${Liga.acabou ? 'CAMPEONATO ENCERRADO' : 'RODADA ' + (Liga.S.round + 1)}`;
     const cardSlot = s => {
       const p = L.slots.get(s.key), imp = Tatica.rotuloImprov(p), ex = vivo && this.expulso(p), en = Math.round(p.energia), pos = this.posCampo(s);
-      const fit = selR ? (Tatica.fator(selR, s.vaga, s.pos) === 1 ? ' fit' : '') : '';
+      const fit = selR ? (Tatica.fator(selR, s.vaga, s.pos, s.ala3) === 1 ? ' fit' : '') : '';
       const cls = 'tt-slot' + (imp ? (imp.grave ? ' grave' : ' imp') : '') + (selP === p ? ' on' : '') + (ex ? ' exp' : '') + fit;
       const ovr = imp ? Math.round(p.ovr * Tatica.improv(p)) : p.ovr;
       return `<button type="button" class="${cls}" data-k="${esc(s.key)}" style="left:${pos.left}%;top:${pos.top}%" aria-pressed="${selP === p}"
@@ -471,7 +484,7 @@ const Painel = {
     const res = L.elenco.filter(p => !p.slotKey).sort((a, b) => ORDEM_DET.indexOf(Tatica.rotPos(a)) - ORDEM_DET.indexOf(Tatica.rotPos(b)) || b.ovr - a.ovr);
     const linhaRes = p => {
       const saiu = vivo && tj.saiu.has(p.nome), en = Math.round(p.energia), bloq = saiu || p.suspenso;
-      const fit = selP && !bloq ? (Tatica.fator(p, selP.vaga, selP.slotPos) === 1 ? ' fit' : ' nofit') : '';
+      const fit = selP && !bloq ? (Tatica.fator(p, selP.vaga, selP.slotPos, selP.slotAla3) === 1 ? ' fit' : ' nofit') : '';
       return `<button type="button" class="tt-r${selR === p ? ' on' : ''}${bloq ? ' saiu' : ''}${fit}" data-n="${esc(p.nome)}" ${bloq ? 'disabled' : ''}>
         <em class="tt-pos p-${p.posicao}">${Tatica.rotPos(p)}</em><span class="tt-rn"><b>${esc(p.nome)}</b>${cartoes(p, vivo)}</span><span class="c-ovr">${p.ovr}</span>
         <span class="c-en">${barra(en)}<small>${en}%</small></span>${p.suspenso ? '<span class="tag susp">SUSPENSO · cumpre esta rodada</span>' : saiu ? '<span class="tag">JÁ SAIU</span>' : ''}</button>`;
@@ -488,7 +501,7 @@ const Painel = {
           <button type="button" class="btn lg-play" data-a="fechar">${vivo && this.volta === 'jogo' ? 'Voltar ao jogo' : 'Pronto'}</button></div>
       </header>
       <div class="tt-ctl">
-        <section class="lg-card"><h3>Formação</h3><div class="lg-pad"><div class="seg tt-seg" role="group" aria-label="Formação">${seg('form', Tatica.FORMACOES.map(f => [f, f]), L.form)}</div>
+        <section class="lg-card"><h3>Formação</h3><div class="lg-pad"><div class="seg tt-seg tt-forms" role="group" aria-label="Formação">${seg('form', Tatica.FORMACOES.map(f => [f, f]), L.form)}</div>
           <p class="tt-d">${Tatica.DESC_FORM[L.form]}</p></div></section>
         <section class="lg-card"><h3>Postura</h3><div class="lg-pad"><div class="seg tt-seg" role="group" aria-label="Postura">${seg('post', Object.entries(Tatica.POSTURAS).map(([k, v]) => [k, v.nome]), post)}</div>
           <p class="tt-d">${Tatica.POSTURAS[post].desc}</p></div></section>

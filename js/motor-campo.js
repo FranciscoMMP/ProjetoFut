@@ -27,9 +27,10 @@ import { Tatica } from './tatica.js';
    Os únicos ganchos fora do Renderer são 2 chamadas Visual.chute(...) (dispara a animação do chute) e
    o campo `visual` de cada jogador (aparência), pronto para receber jogadores reais.
 
-   ETAPA 6 (gerador procedural): módulo Gen + 15 perfis em Scenarios (contra-ataque 3x2/2x1/3x3/4x3, entrada da área, falta, ponta,
+   ETAPA 6 (gerador procedural): módulo Gen + 24 perfis em Scenarios (contra-ataque 3x2/2x1/3x3/4x3, entrada da área, falta, ponta,
    defesa fechada, jogo posicional, escanteio, pênalti, cara a cara, bola nas costas, bola recuperada, superioridade pelo lado, linha
-   de fundo, segunda bola e bloco baixo). Cada lance sai de tabelas de equilíbrio numérico + bloco defensivo montado pela formação e é
+   de fundo, segunda bola, bloco baixo, 1x1 na ponta, infiltração em diagonal, chute de primeira na meia-lua, cruzamento para
+   cabecear, pressão pós-perda, goleiro adiantado, lateral longo, escanteio curto ensaiado e falta na ponta). Cada lance sai de tabelas de equilíbrio numérico + bloco defensivo montado pela formação e é
    validado (impedimento, vulnerabilidade, buracos na linha) antes de começar. Escanteio: cruzamento no alto e cabeçada automática
    (Game.headerContest). Falta/escanteio/pênalti: adversários a no mínimo 9,15 m da bola (keepFromBall).
 
@@ -398,6 +399,7 @@ class Keeper {
       if (Math.hypot(s.vx, s.vy) < 8 && s.z <= 0) break;
     }
     this.plan = null; this.state = 'idle';
+    if (!game.naArea(this.x, this.y)) return;                        // fora da área: não mergulha (não pode usar as mãos); só volta para o gol
     if (game.penalty) {                      // PÊNALTI: sorteia uma zona (esquerda, centro ou direita) sem ler a bola; chance pequena de acertar
       let z = Gen.pick([[-1, 0.38], [1, 0.38], [0, 0.24]]);
       if (hit && Math.random() < Util.lerp(0.05, 0.20, t)) z = Math.abs(hit.x - cx) < 1.0 * M ? 0 : Math.sign(hit.x - cx);
@@ -549,6 +551,14 @@ const Tactics = {
     '4-3-3': { amp: { W: 1.12 }, aBonus: { W: 3 }, wide: 1.35 },
     '4-4-2': { amp: { ST: 0.6, CM: 0.85, WM: 0.9 }, depth: { ST: -1 }, aBonus: { ST: 4, WM: 1 }, wide: 0.75 },
     '3-5-2': { amp: { CM: 0.8, FB: 1.04 }, depth: { FB: 5, CM: 1 }, aBonus: { CM: 2, FB: 5, DM: 1 }, wide: 1.1, runners: ['FB'] },
+    // 4-2-3-1: meia de ligação e pontas por dentro do meio-campo, centroavante isolado.
+    '4-2-3-1': { amp: { W: 0.95, AM: 1 }, depth: { AM: 1 }, aBonus: { AM: 3, W: 1, ST: 1 }, wide: 0.95 },
+    // 4-1-4-1: quatro meias em linha chegam ao ataque; um só atacante.
+    '4-1-4-1': { amp: { CM: 0.9, WM: 1 }, depth: { CM: 2 }, aBonus: { CM: 2, WM: 2 }, wide: 0.9 },
+    // 3-4-3: três atacantes e meias abertos ocupando o corredor inteiro.
+    '3-4-3': { amp: { W: 1.05, WM: 1.08 }, depth: { WM: 3 }, aBonus: { W: 3, WM: 3 }, wide: 1.25 },
+    // 5-3-2: alas profundos (apoiam do fundo) e dupla de ataque próxima; chega pouco ao ataque.
+    '5-3-2': { amp: { ST: 0.65, FB: 1.06 }, depth: { FB: 6 }, aBonus: { ST: 3, FB: 4 }, wide: 1.1, runners: ['FB'] },
   },
   /** Postura do SEU time nos lances: dy = metros que o bloco sobe (+) ou recua (-); na = atacantes a mais/menos; run = chance de infiltração. */
   POSTURA: {
@@ -718,6 +728,7 @@ const Gen = {
     if (r.gap && m.nd >= 3 && m.gap > r.gap) bad += 1;                                 // buraco grande na linha defensiva
     if (r.minNear && m.nearCar < r.minNear) bad += 1;                                  // defensor colado no portador
     if (m.minSep < 1.6 * CFG.PLAYER_R) bad += 1;                                       // jogadores sobrepostos
+    if (r.shot && !m.shot) bad += 1;                                                   // lance de chute: a linha até o gol precisa estar limpa
     spec.qa = { ...m, bad };
     return bad;
   },
@@ -739,12 +750,17 @@ const Gen = {
  *     rules (faixas do validador), noOffside?, corner?, keeper?:{x,y}, recv?:{vx,vy,maxZ,bounces} }
  */
 const Scenarios = {
-  TYPES: ['contra', 'entrada', 'parada', 'ponta', 'fechada', 'posicional', 'escanteio', 'penalti', 'um_x_um', 'costas', 'roubada', 'lado', 'fundo', 'rebote', 'bloco'],
+  TYPES: ['contra', 'entrada', 'parada', 'ponta', 'fechada', 'posicional', 'escanteio', 'penalti', 'um_x_um', 'costas', 'roubada', 'lado', 'fundo', 'rebote', 'bloco',
+          'isolado', 'diagonal', 'longe', 'cabeca', 'pressao', 'goleiro', 'arremesso', 'curto', 'faltaponta'],
   forceN: 0,   // 0 = sorteia 5 a 7 jogadores por lado no cenário posicional; senão fixa o número
-  WEIGHTS: { contra: 1, entrada: 1, parada: 0.9, ponta: 0.8, fechada: 0.7, posicional: 1, escanteio: 1, penalti: 0.12, um_x_um: 0.6, costas: 0.8, roubada: 0.7, lado: 0.7, fundo: 0.6, rebote: 0.5, bloco: 0.7 },
+  // Peso BASE de cada tipo no sorteio (o contexto da partida multiplica: Scenarios.pesos). Pênalti calibrado para continuar ~1% dos lances.
+  WEIGHTS: { contra: 1, entrada: 1, parada: 0.9, ponta: 0.8, fechada: 0.7, posicional: 1, escanteio: 0.85, penalti: 0.16, um_x_um: 0.6, costas: 0.8, roubada: 0.7, lado: 0.7, fundo: 0.6, rebote: 0.5, bloco: 0.7,
+             isolado: 0.6, diagonal: 0.6, longe: 0.5, cabeca: 0.6, pressao: 0.55, goleiro: 0.22, arremesso: 0.35, curto: 0.3, faltaponta: 0.4 },
   LABEL: { contra: 'Contra-ataque', entrada: 'Entrada da área', parada: 'Bola parada (falta)', ponta: 'Ponta/Cruzamento', fechada: 'Defesa fechada', posicional: 'Jogo posicional',
            escanteio: 'Escanteio', penalti: 'Pênalti', um_x_um: 'Cara a cara', costas: 'Bola nas costas', roubada: 'Bola recuperada', lado: 'Superioridade pelo lado',
-           fundo: 'Linha de fundo', rebote: 'Segunda bola', bloco: 'Bloco baixo' },
+           fundo: 'Linha de fundo', rebote: 'Segunda bola', bloco: 'Bloco baixo', isolado: '1x1 na ponta', diagonal: 'Infiltração em diagonal',
+           longe: 'Chute na meia-lua', cabeca: 'Cruzamento p/ cabeçada', pressao: 'Pressão pós-perda', goleiro: 'Goleiro adiantado',
+           arremesso: 'Lateral na área', curto: 'Escanteio curto', faltaponta: 'Falta na ponta' },
   TALK: {
     contra: ['Roubou a bola! Saída em velocidade...', 'Erro na saída deles: contra-ataque!', 'Transição rápida pelo meio-campo...'],
     entrada: ['Boa triangulação no meio-campo...', 'Time empurra o rival para a área.', 'Posse paciente na entrada da área...'],
@@ -761,6 +777,15 @@ const Scenarios = {
     fundo: ['Chegou na linha de fundo!', 'Ponta vence o lateral e vai ao fundo!', 'Bola rasteira para trás vem aí...'],
     rebote: ['A bola sobrou na entrada da área!', 'Rebote! Segunda bola para o ataque.', 'Dividida e a bola sobra...'],
     bloco: ['Rival se fecha e deixa o chute de fora...', 'Bloco baixo: tem espaço na entrada da área.', 'Defesa recuada espera o ataque.'],
+    isolado: ['O ponta fica no mano a mano com o lateral!', 'Bola no pé do ponta, só o lateral pela frente...', 'Duelo individual pela ponta!'],
+    diagonal: ['Meia conduz e o companheiro ataca o espaço em diagonal...', 'A defesa está compacta: a brecha é entre zagueiro e lateral.', 'Movimento em diagonal pelas costas do lateral!'],
+    longe: ['A bola rola para a meia-lua, ninguém marca!', 'Rolou para trás: bate de primeira?', 'Espaço na entrada da área para o chute!'],
+    cabeca: ['O ponta prepara o cruzamento...', 'Centroavante se posiciona na área!', 'Bola levantada vem aí, área ocupada!'],
+    pressao: ['Pressão no meio-campo: o rival perdeu a bola!', 'Recuperou logo após perder: rival desarrumado!', 'Pressão pós-perda funciona!'],
+    goleiro: ['O goleiro saiu do gol e a bola sobrou!', 'Goleiro adiantado, gol aberto!', 'Saída errada do goleiro: tem que ser rápido!'],
+    arremesso: ['Lateral perto da área: vai na área!', 'Lateral longo, área cheia!', 'O lateral vai ser cobrado na área!'],
+    curto: ['Escanteio curto ensaiado!', 'Batida curta: dois contra um na bandeirinha.', 'O time vai trabalhar o escanteio curto.'],
+    faltaponta: ['Falta na ponta, perto da linha de fundo!', 'Falta pelo lado: bola na área!', 'Barreira de dois, área cheia: vem o cruzamento!'],
   },
   KICKERS: ['AM', 'CM', 'LW', 'RW', 'LM', 'RM', 'DM', 'ST'],
   WINGERS: ['LW', 'RW', 'LM', 'RM', 'AM', 'CM'],
@@ -898,6 +923,160 @@ const Scenarios = {
       holdY: 32 * M, shift: 0.6, leash: 2.2, attract: null, setPiece: false, rules: { open: [0, 2], gap: 16 * M, minNear: 5 * M } };
   },
 
+  /* ---------- Individuais ---------- */
+  /**
+   * 1x1 NA PONTA: o ponta recebe aberto, de frente para o lateral (só ele na frente). Na área, dois zagueiros com o centroavante;
+   * de trás chega um meia de apoio. Ganhar no drible e cruzar/finalizar, ou tocar para o apoio.
+   */
+  isolado() {
+    const W = CFG.FIELD.w, cx = W / 2, side = Rnd.chance(0.5) ? -1 : 1, nd = Rnd.chance(0.6) ? 3 : 4, na = nd === 4 ? 3 : Rnd.chance(0.5) ? 2 : 3;
+    const bx = cx + side * Rnd.r(22, 27) * M, by = Rnd.r(20, 27) * M, c = { bx, by, line: 11 * M, comp: 0.5, lat: 0.75 };
+    const atts = [{ x: bx, y: by, prefer: side < 0 ? ['LW', 'LM', 'LWB', 'LB'] : ['RW', 'RM', 'RWB', 'RB'] },
+                  { x: cx + side * Rnd.r(-2, 3) * M, y: Rnd.r(12.5, 14.5) * M }];                         // centroavante na área
+    if (na === 3) atts.push({ x: cx + side * Rnd.r(7, 11) * M, y: by + Rnd.r(3, 6) * M });               // apoio vindo de trás
+    const defs = [{ x: bx - side * Rnd.r(0.5, 1.5) * M, y: by - Rnd.r(3.8, 5) * M },                      // o lateral, no mano a mano
+                  { x: cx + side * Rnd.r(3, 6) * M, y: Rnd.r(9.5, 11.5) * M }, { x: cx - side * Rnd.r(2, 5) * M, y: Rnd.r(9.5, 11.5) * M }];
+    if (nd === 4) defs.push({ x: cx + side * Rnd.r(0, 5) * M, y: Rnd.r(17, 20) * M });                    // volante na entrada da área
+    const A = Tactics.fill('us', atts, c), D = Tactics.fill('opp', defs, c); Tactics.relax(A); Tactics.relax(D);
+    return { type: 'isolado', name: '1x1 NA PONTA', sub: `${A.length} x ${D.length} • drible o lateral e cruze, ou toque para o apoio`,
+      attackers: A, defenders: D, tac: { line: c.line, comp: c.comp, lat: c.lat, by0: by },
+      holdY: 1e9, leash: 1.8, attract: { x: cx, y: 10 * M, r: 6 * M }, setPiece: false, rules: { open: [0, 2], minNear: 3.2 * M } };
+  },
+
+  /**
+   * INFILTRAÇÃO EM DIAGONAL: meia conduz por um lado do meio contra uma linha de 4 compacta; o espaço fica entre o zagueiro
+   * e o lateral do outro lado, e os companheiros atacam essa brecha em diagonal (attract). Enfiar no tempo certo, sem impedimento.
+   */
+  diagonal() {
+    const cx = CFG.FIELD.w / 2, side = Rnd.chance(0.5) ? -1 : 1, [na, nd] = Gen.pick([[[3, 4], 0.45], [[4, 4], 0.3], [[4, 5], 0.25]]);
+    const bx = cx + side * Rnd.r(4, 9) * M, by = Rnd.r(26, 31) * M, line = Rnd.r(15.5, 18) * M;
+    const t = Tactics.assemble({ bx, by, na, nd, line, comp: 0.5, lat: 0.62, carrier: ['AM', 'CM', 'LM', 'RM', 'DM'],
+      aBonus: { W: 6, ST: 5, WM: 4, AM: 2 }, dBonus: { CB: 8, FB: 6, DM: 4 } });
+    Gen.tuck(t.defenders, bx, 0.25); Tactics.relax(t.defenders);
+    return { type: 'diagonal', name: 'INFILTRAÇÃO EM DIAGONAL', sub: `${t.attackers.length} x ${nd} • enfie para quem ataca o espaço entre zagueiro e lateral`, ...t,
+      holdY: 30 * M, leash: 1.8, attract: { x: cx - side * Rnd.r(5, 9) * M, y: line - 3 * M, r: 5 * M }, setPiece: false,
+      rules: { open: [0, 2], gap: 18 * M, minNear: 4 * M } };
+  },
+
+  /* ---------- Finalização ---------- */
+  /**
+   * CHUTE DE PRIMEIRA NA MEIA-LUA: a bola chega rolando (passe para trás) para o meia, livre na meia-lua; a defesa está
+   * enterrada na área. Bater de primeira (a tela de contato já mostra a bola chegando) ou dominar e procurar o passe.
+   */
+  longe() {
+    const cx = CFG.FIELD.w / 2, side = Rnd.chance(0.5) ? -1 : 1, [na, nd] = Gen.pick([[[3, 5], 0.4], [[3, 4], 0.3], [[4, 5], 0.3]]);
+    const bx = cx + Rnd.r(-5, 5) * M, by = Rnd.r(20.5, 24) * M;
+    const t = Tactics.assemble({ bx, by, na, nd, line: Rnd.r(7.5, 10) * M, comp: 0.4, lat: 0.65, carrier: ['CM', 'AM', 'DM'],
+      aBonus: { ST: 5, W: 4, WM: 3, AM: 2 }, dBonus: { CB: 10, FB: 8, DM: 4 } });
+    // a defesa fecha os lados e deixa a linha do chute aberta: quem está no caminho bola -> gol abre para o lado
+    const bY = by - CFG.CARRY_DIST;
+    for (const d of t.defenders) {
+      const g = Util.segDist(d.x, d.y, bx, bY, cx, 0); if (g >= 2.8 * M) continue;
+      const lx = bx + (cx - bx) * Util.clamp((bY - d.y) / bY, 0, 1), sg = d.x >= lx ? 1 : -1;
+      d.x = Util.clamp(d.x + sg * (2.9 * M - g + Rnd.r(0.2, 1.2) * M), 2 * M, CFG.FIELD.w - 2 * M);
+    }
+    return { type: 'longe', name: 'CHUTE DE PRIMEIRA NA MEIA-LUA', sub: `${t.attackers.length} x ${nd} • a bola chega rolando: bata de primeira ou domine`, ...t,
+      recv: { vx: side * Rnd.r(120, 220), vy: Rnd.r(-40, 40), maxZ: 0, bounces: 0 },
+      holdY: 19 * M, shift: 0.5, leash: 1.4, attract: null, setPiece: false, rules: { open: [1, 3], minNear: 6 * M, shot: true } };
+  },
+
+  /**
+   * CRUZAMENTO PARA CABECEAR: o ponta está aberto perto da área, com o lateral a alguns metros; o centroavante e mais um entram
+   * na área, cada um com o seu marcador. Arraste forte em direção à área: a bola sai alta e a cabeçada é disputada no ar
+   * (Posicionamento x Marcação), como no escanteio, mas valendo impedimento.
+   */
+  cabeca() {
+    const W = CFG.FIELD.w, cx = W / 2, side = Rnd.chance(0.5) ? -1 : 1, na = Rnd.chance(0.55) ? 3 : 4, nd = na === 4 ? 4 : Rnd.chance(0.5) ? 3 : 4;
+    const bx = cx + side * Rnd.r(20, 26) * M, by = Rnd.r(14, 22) * M, c = { bx, by, line: 9 * M, comp: 0.45, lat: 0.7 };
+    const st = { x: cx + Rnd.r(-3, 3) * M, y: Rnd.r(10.5, 13) * M }, fp = { x: cx - side * Rnd.r(4, 7) * M, y: Rnd.r(9, 11.5) * M };
+    const atts = [{ x: bx, y: by, prefer: side < 0 ? ['LW', 'LM', 'LWB', 'LB'] : ['RW', 'RM', 'RWB', 'RB'] }, st, fp];
+    if (na === 4) atts.push({ x: cx + side * Rnd.r(0, 4) * M, y: Rnd.r(16, 19) * M });                    // chegando para o rebote
+    const defs = [{ x: st.x + (cx - st.x) * 0.15, y: st.y - 1.6 * M }, { x: fp.x + (cx - fp.x) * 0.15, y: fp.y - 1.6 * M },   // marcadores (lado do gol)
+                  { x: bx - side * Rnd.r(2, 4) * M, y: by - Rnd.r(4.5, 6.5) * M }];                            // o lateral fechando o cruzamento
+    if (nd === 4) defs.push({ x: cx + side * Rnd.r(1, 4) * M, y: Rnd.r(5, 6.5) * M });                      // zona na pequena área
+    const A = Tactics.fill('us', atts, c), D = Tactics.fill('opp', defs, c); Tactics.relax(A); Tactics.relax(D);
+    for (const d of D.slice(0, 2)) d.fixed = true;                                                         // marcação individual
+    return { type: 'cabeca', name: 'CRUZAMENTO NA ÁREA • CABECEIO', sub: `${A.length} x ${D.length} • arraste forte para a área: a bola vai alta e a cabeçada é automática`,
+      attackers: A, defenders: D, tac: { line: c.line, comp: c.comp, lat: c.lat, by0: by }, cruzamento: true,
+      holdY: 1e9, leash: 1.6, attract: { x: cx, y: 9.5 * M, r: 5 * M }, setPiece: false, rules: { open: [0, 2], minNear: 4 * M } };
+  },
+
+  /* ---------- Transição ---------- */
+  /**
+   * PRESSÃO PÓS-PERDA: o rival perdeu a bola na saída, ainda no meio-campo, com o time esticado e aberto (linha alta e
+   * desorganizada). Atacar rápido, antes da recomposição.
+   */
+  pressao() {
+    const cx = CFG.FIELD.w / 2, [na, nd] = Gen.pick([[[4, 4], 0.45], [[3, 3], 0.25], [[4, 3], 0.15], [[5, 4], 0.15]]);
+    const bx = cx + Rnd.r(-15, 15) * M, by = Rnd.r(43, 50) * M;
+    const t = Tactics.assemble({ bx, by, na, nd, line: Rnd.r(26, 32) * M, comp: 0.9, lat: 1.05,
+      carrier: ['CM', 'DM', 'AM', 'LM', 'RM'], aBonus: { ST: 4, AM: 4, W: 4, WM: 3, CM: 3 }, dBonus: { CB: 4, FB: 4, DM: 5, CM: 4 } });
+    Gen.jitter(t.defenders, 3.2, 4); Tactics.relax(t.defenders);
+    return { type: 'pressao', name: 'PRESSÃO PÓS-PERDA NO MEIO-CAMPO', sub: `${t.attackers.length} x ${nd} • rival desarrumado: ataque antes da recomposição`, ...t,
+      holdY: 1e9, leash: 2.4, attract: null, setPiece: false, rules: { open: [1, 3], minNear: 3 * M, gap: 28 * M } };
+  },
+
+  /**
+   * GOLEIRO ADIANTADO: o goleiro saiu da área para cortar um lançamento e a bola sobrou para o seu time. Ele volta correndo
+   * para o gol (a IA de sempre); um zagueiro recua para cobrir e outro persegue. Chute de cobertura logo, ou conduza e toque.
+   */
+  goleiro() {
+    const cx = CFG.FIELD.w / 2, bx = cx + Rnd.r(-12, 12) * M, by = Rnd.r(30, 40) * M, sd = Rnd.chance(0.5) ? -1 : 1;
+    const kx = cx + Rnd.r(-5, 5) * M, ky = Rnd.r(17, 22) * M, c = { bx, by, line: ky, comp: 0.5, lat: 0.8 };
+    const nd = Rnd.chance(0.6) ? 2 : 1, na = nd === 2 ? Rnd.i(2, 3) : 2;
+    const atts = [{ x: bx, y: by, prefer: ['ST', 'AM', 'CM', 'LW', 'RW'] }];
+    for (let i = 1; i < na; i++) atts.push({ x: bx - sd * (i === 1 ? 1 : -1) * Rnd.r(7, 11) * M, y: Math.max(ky + 2.5 * M, by - Rnd.r(2, 7) * M) });
+    const defs = [{ x: cx + Rnd.r(-7, 7) * M, y: Rnd.r(9, 15) * M }];                                        // recuou para cobrir o gol
+    if (nd === 2) defs.push({ x: bx + sd * Rnd.r(5, 8) * M, y: by + Rnd.r(1.5, 4) * M });                   // persegue o portador por trás
+    const A = Tactics.fill('us', atts, c), D = Tactics.fill('opp', defs, c); Tactics.relax(A); Tactics.relax(D);
+    return { type: 'goleiro', name: 'GOLEIRO ADIANTADO', sub: `${A.length} x ${D.length} • o goleiro está voltando: cobertura rápida ou conduza`,
+      attackers: A, defenders: D, tac: { line: 12 * M, comp: 0.5, lat: 0.8, by0: by }, keeper: { x: kx, y: ky },
+      holdY: 1e9, leash: 2, attract: null, setPiece: false, rules: { minNear: 4.5 * M } };
+  },
+
+  /* ---------- Bola parada (extra) ---------- */
+  /**
+   * LATERAL NA ÁREA: cobrança COM AS MÃOS, de fora do campo, perto da área. Não há tela de contato: só a direção e a força do
+   * arrasto (Game.buildThrow). A ALTURA sai da distância: arrasto curto = bola baixa no pé/peito de quem está perto;
+   * arrasto longo = bola alta para a área, com a cabeçada automática. Sem impedimento e sem gol direto da cobrança.
+   */
+  arremesso() {
+    const W = CFG.FIELD.w, cx = W / 2, s = Rnd.chance(0.5) ? -1 : 1, by = Rnd.r(13, 22) * M;
+    const bx = s < 0 ? 8 : W - 8, c = { bx, by, line: 8 * M, comp: 0.5, lat: 0.8 };
+    const dir = Math.atan2(-0.35, -s), kx = bx - Math.cos(dir) * CFG.CARRY_DIST, ky = by - Math.sin(dir) * CFG.CARRY_DIST;   // de fora do campo, de frente para a área
+    const nIn = Rnd.i(3, 4);
+    const slots = Gen.shuffle([{ x: cx + s * 4 * M, y: 7 * M }, { x: cx, y: 10.5 * M }, { x: cx - s * 4.5 * M, y: 8 * M }, { x: cx + s * 1.5 * M, y: 5.5 * M }]).slice(0, nIn);
+    const ins = slots.map(p => ({ x: p.x + Rnd.r(-1.2, 1.2) * M, y: p.y + Rnd.r(-1, 1) * M }));
+    const atts = [{ x: kx, y: ky, prefer: s < 0 ? ['LB', 'LWB', 'LM', 'LW'] : ['RB', 'RWB', 'RM', 'RW'] }, ...ins,
+                  { x: bx - s * Rnd.r(5, 7) * M, y: by + Rnd.r(1, 4) * M }];                                  // opção curta
+    const defs = [];
+    for (const p of ins) defs.push({ x: p.x + (cx - p.x) * 0.1, y: p.y - 1.6 * M, fixed: true });           // marcação individual
+    defs.push({ x: cx - s * 2 * M, y: 4.5 * M, fixed: true }, { x: cx + s * Rnd.r(6, 9) * M, y: Rnd.r(12, 15) * M, fixed: true });
+    if (Rnd.chance(0.5)) defs.push({ x: bx - s * Rnd.r(9, 11) * M, y: by - Rnd.r(2, 5) * M });              // fecha a opção curta
+    const A = Tactics.fill('us', atts, c), D = Tactics.fill('opp', defs, c); Tactics.relax(A); Tactics.relax(D);
+    return { type: 'arremesso', name: 'LATERAL NA ÁREA', sub: `${A.length} x ${D.length} • com as mãos: arrasto curto = bola baixa no pé, longo = bola alta para cabecear`,
+      attackers: A, defenders: D, tac: null, holdY: 1e9, attract: { x: cx, y: 8 * M, r: 6 * M }, setPiece: true, noOffside: true, arremesso: true,
+      ball: { x: bx, y: by }, facing: dir, foraCampo: 2 * M, rules: { maxDiff: 99 } };
+  },
+
+  /**
+   * FALTA NA PONTA: falta pelo lado, perto da linha de fundo; barreira de 2 e a área cheia. Arraste forte para a área: a bola
+   * vai alta e a cabeçada é automática (valendo impedimento); mirando o gol, é chute normal.
+   */
+  faltaponta() {
+    const cx = CFG.FIELD.w / 2, side = Rnd.chance(0.5) ? -1 : 1, bx = cx + side * Rnd.r(16, 24) * M, by = Rnd.r(10, 17) * M;
+    const c = { bx, by, line: 8 * M, comp: 0.5, lat: 0.8 }, nIn = Rnd.i(3, 4);
+    const slots = Gen.shuffle([{ x: cx + side * 3 * M, y: 7.5 * M }, { x: cx - side * 1 * M, y: 10.5 * M }, { x: cx - side * 5 * M, y: 8.5 * M }, { x: cx + side * 0.5 * M, y: 13.5 * M }]).slice(0, nIn);
+    const ins = slots.map(p => ({ x: p.x + Rnd.r(-1, 1) * M, y: p.y + Rnd.r(-0.8, 0.8) * M }));
+    const atts = [{ x: bx, y: by + CFG.CARRY_DIST, prefer: this.KICKERS }, ...ins];
+    const defs = this.wall(bx, by, 2);
+    for (const p of ins) defs.push({ x: p.x + (cx - p.x) * 0.1, y: p.y - 1.5 * M, fixed: true });
+    defs.push({ x: cx + side * 1.5 * M, y: 4.5 * M, fixed: true });                                          // zona no primeiro pau
+    const A = Tactics.fill('us', atts, c), D = Tactics.fill('opp', defs, c); Tactics.relax(A);
+    return { type: 'faltaponta', name: 'FALTA NA PONTA • BOLA NA ÁREA', sub: 'barreira de 2 • arraste forte para a área: cabeçada automática; ou bata no gol',
+      attackers: A, defenders: D, tac: null, holdY: 1e9, attract: { x: cx, y: 9 * M, r: 6 * M }, setPiece: true, cruzamento: true, rules: { maxDiff: 99 } };
+  },
+
   /* ---------- Bola parada ---------- */
   /** Falta: frontal (cobrança direta, barreira de 2-3) ou lateral (cruzamento/passe ensaiado). */
   parada() { return Rnd.chance(0.5) ? this.frontal() : this.lateral(); },
@@ -928,18 +1107,25 @@ const Scenarios = {
   /**
    * Escanteio: 4-6 atacantes na área contra 7-9 defensores (2 nas traves, marcação individual, zona na pequena área e, às vezes,
    * um esperando o contra-ataque fora da área). O cruzamento sai no alto (efeito automático) e a disputa de cabeça é decidida
-   * pelo jogo (Posicionamento x Marcação). 25% das vezes é escanteio curto, com um companheiro perto do batedor.
+   * pelo jogo (Posicionamento x Marcação). O ESCANTEIO CURTO ensaiado é um tipo próprio (Scenarios.curto).
    */
-  escanteio() {
+  escanteio() { return this.canto(false); },
+  /**
+   * Escanteio curto ensaiado: dois companheiros perto da bandeirinha (dois contra um), poucos na área e um rival saindo para
+   * pressionar. Tocar curto e cruzar de mais perto, ou entrar driblando pela linha de fundo.
+   */
+  curto() { return this.canto(true); },
+  canto(curto) {
     const W = CFG.FIELD.w, cx = W / 2, s = Rnd.chance(0.5) ? -1 : 1;                // s: lado do escanteio (-1 esquerda, +1 direita)
-    const curto = Rnd.chance(0.25), nIn = curto ? Rnd.i(3, 4) : Rnd.i(4, 6);
+    const nIn = curto ? Rnd.i(3, 4) : Rnd.i(4, 6);
     const bx = s < 0 ? 8 : W - 8, by = 8, c = { bx, by, line: 8 * M, comp: 0.5, lat: 0.8 };      // bola dentro do arco de 1 m do canto
     const dir = Math.atan2(1, -s), kx = bx - Math.cos(dir) * CFG.CARRY_DIST, ky = by - Math.sin(dir) * CFG.CARRY_DIST;   // cobrador atrás da bola, fora do campo
     const slots = Gen.shuffle([{ x: cx + s * 4.5 * M, y: 7 * M }, { x: cx + s * 0.5 * M, y: 11 * M }, { x: cx - s * 4.5 * M, y: 8 * M },
                                { x: cx - s * 0.5 * M, y: 5.2 * M }, { x: cx + s * 5.5 * M, y: 14 * M }, { x: cx - s * 8.5 * M, y: 13 * M }]).slice(0, nIn);
     const ins = slots.map(p => ({ x: p.x + Rnd.r(-1.2, 1.2) * M, y: p.y + Rnd.r(-1, 1) * M }));
     const atts = [{ x: kx, y: ky, prefer: this.WINGERS }, ...ins];
-    if (curto) atts.push({ x: bx - s * Rnd.r(4.5, 6) * M, y: Rnd.r(9, 11) * M });          // opção curta junto à lateral
+    if (curto) atts.push({ x: bx - s * Rnd.r(4.5, 6) * M, y: Rnd.r(9, 11) * M },            // opção curta junto à lateral...
+                         { x: bx - s * Rnd.r(9, 12) * M, y: Rnd.r(3.5, 6) * M });           // ...e outra perto da linha de fundo
     const nd = Gen.pick([[7, 0.35], [8, 0.4], [9, 0.25]]);
     const mk = Math.min(ins.length, nd - 3), rest = nd - 2 - mk, wait = rest >= 1 ? 1 : 0;
     const zoneAll = [{ x: cx - s * 2.4 * M, y: 5.2 * M }, { x: cx + s * 2.4 * M, y: 5.2 * M }, { x: cx, y: 8.6 * M }, { x: cx - s * 5.5 * M, y: 6.5 * M }];
@@ -950,8 +1136,10 @@ const Scenarios = {
     if (wait) defs.push({ x: cx + Rnd.r(-8, 8) * M, y: Rnd.r(21, 26) * M });                              // esperando o contra-ataque
     for (let k = 0; defs.length < nd; k++) defs.push({ x: cx + (k % 2 ? 1 : -1) * Rnd.r(2, 6) * M, y: 17.5 * M });   // sobrou gente: borda da área
     for (const d of defs) d.fixed = true;
+    if (curto) defs.push({ x: bx - s * Rnd.r(9.6, 11) * M, y: Rnd.r(7, 10) * M });               // rival que sai para pressionar a dupla
     const A = Tactics.fill('us', atts, c), D = Tactics.fill('opp', defs, c); Tactics.relax(A); Tactics.relax(D);
-    return { type: 'escanteio', name: curto ? 'ESCANTEIO CURTO' : 'ESCANTEIO', sub: curto ? `${A.length} x ${D.length} • toque curto ou cruze na área` : `${A.length} x ${D.length} • arraste forte: a bola vai no alto, a cabeçada é automática`,
+    return { type: curto ? 'curto' : 'escanteio', name: curto ? 'ESCANTEIO CURTO ENSAIADO' : 'ESCANTEIO',
+      sub: curto ? `${A.length} x ${D.length} • 2 contra 1 na bandeirinha: toque curto e cruze de perto` : `${A.length} x ${D.length} • arraste forte: a bola vai no alto, a cabeçada é automática`,
       attackers: A, defenders: D, tac: null, holdY: 1e9, attract: { x: cx, y: 8 * M, r: 6 * M }, setPiece: true, noOffside: true, corner: true,
       ball: { x: bx, y: by }, facing: dir, foraCampo: 2 * M,
       rules: { maxDiff: 99 } };
@@ -997,6 +1185,55 @@ const Scenarios = {
   },
 
   /** Monta o lance do tipo pedido já validado pelo gerador (regras de futebol + vulnerabilidade). */
+  /**
+   * MISTURA DOS LANCES PELO CONTEXTO (campeonato e amistoso): multiplica o peso BASE de cada tipo pelo momento da partida.
+   *   ctx = { saldo (seus gols - gols do rival), min (minuto), postura ('equilibrada' | 'ofensiva' | 'defensiva') }
+   * O centro do modelo é a ABERTURA do rival (-1 = todo atrás ... +1 = todo à frente, deixando espaço nas costas):
+   *   - começo de jogo empatado: partida estudada, os dois times organizados: quase não há contra-ataque nem bola nas costas;
+   *     o que aparece é posse, pressão e entrada da área (efeito some até os 20');
+   *   - rival PERDENDO: ele se lança, cada vez mais com o passar do tempo (2 gols atrás, mais ainda);
+   *   - EMPATE: o jogo vai abrindo a partir dos 60' (os dois querem ganhar);
+   *   - VOCÊ perdendo: o rival se fecha e administra (defesa fechada, bloco baixo, bola na área), cada vez mais.
+   * Fim de jogo com até 1 gol de diferença: mais bola parada. A postura do seu time ajusta por cima.
+   * Só muda QUAL lance aparece; o lance em si e a física não mudam.
+   */
+  CONTEXTO: {
+    aberto:    { contra: 2.4, costas: 1.9, goleiro: 3, um_x_um: 1.8, roubada: 1.3, isolado: 1.2, lado: 1.15,
+                 fechada: 0.3, bloco: 0.4, posicional: 0.55, entrada: 0.8, longe: 0.8 },
+    fechado:   { fechada: 2.2, bloco: 2, posicional: 1.4, entrada: 1.2, cabeca: 1.5, longe: 1.4, lado: 1.2, arremesso: 1.25, faltaponta: 1.25,
+                 contra: 0.25, costas: 0.4, goleiro: 0.15, um_x_um: 0.5, pressao: 0.8 },
+    estudado:  { contra: 0.25, costas: 0.45, goleiro: 0.1, um_x_um: 0.45, isolado: 0.8, rebote: 0.8,
+                 posicional: 1.6, entrada: 1.35, pressao: 1.4, roubada: 1.15, diagonal: 1.2 },
+    apertado:  { escanteio: 1.4, curto: 1.2, parada: 1.3, faltaponta: 1.4, arremesso: 1.4, cabeca: 1.3, rebote: 1.3 },
+    ofensiva:  { pressao: 1.5, roubada: 1.3, posicional: 1.25, lado: 1.2, diagonal: 1.2, contra: 0.8, goleiro: 0.8 },
+    defensiva: { contra: 1.5, costas: 1.4, goleiro: 1.4, um_x_um: 1.2, pressao: 0.6, posicional: 0.75, roubada: 0.8 },
+  },
+  /** Abertura do rival (-1 fechado ... +1 aberto) pelo placar e pelo minuto. */
+  abertura(saldo, min) {
+    const t = Util.clamp((min - 10) / 70, 0, 1);                                   // peso do relógio: cresce até os 80'
+    if (saldo > 0) return Util.clamp((0.3 + 0.7 * t) * (saldo >= 2 ? 1.25 : 1), 0, 1);   // rival perdendo: se lança
+    if (saldo < 0) return -Util.clamp((0.3 + 0.7 * t) * (saldo <= -2 ? 1.15 : 1), 0, 1); // rival ganhando: fecha e administra
+    return 0.75 * Util.clamp((min - 60) / 25, 0, 1);                              // empate: abre a partir dos 60'
+  },
+  /** Pesos do sorteio para o contexto (sem ctx = pesos base). Cada fator é aplicado com intensidade k: 1 + (f - 1) * k. */
+  pesos(ctx) {
+    const W = { ...this.WEIGHTS }; if (!ctx) return W;
+    const aplica = (tab, k) => { if (k > 0) for (const t in tab) if (W[t] != null) W[t] *= Math.max(0.05, 1 + (tab[t] - 1) * k); };
+    const min = Util.clamp(ctx.min || 0, 0, 90), saldo = ctx.saldo || 0, ab = this.abertura(saldo, min);
+    if (ab > 0) aplica(this.CONTEXTO.aberto, ab); else if (ab < 0) aplica(this.CONTEXTO.fechado, -ab);
+    if (!saldo && min < 20) aplica(this.CONTEXTO.estudado, 1 - min / 20);
+    if (min >= 75 && Math.abs(saldo) <= 1) aplica(this.CONTEXTO.apertado, (min - 75) / 15 + 0.5);
+    if (this.CONTEXTO[ctx.postura]) aplica(this.CONTEXTO[ctx.postura], 1);
+    return W;
+  },
+  /** Sorteia um tipo com os pesos (opcional: contexto, tipo a evitar e se o pênalti está liberado). */
+  sortear(ctx, evitar = null, semPenalti = false) {
+    const W = this.pesos(ctx), T = this.TYPES.filter(k => k !== evitar && !(semPenalti && k === 'penalti'));
+    let r = Math.random() * T.reduce((s, k) => s + W[k], 0);
+    for (const k of T) { r -= W[k]; if (r <= 0) return k; }
+    return T[0];
+  },
+
   make(type) {
     const s = Gen.gerar(() => this[type]());
     const P = { ofensiva: '  •  Ofensiva', defensiva: '  •  Defensiva' }[Tactics.postura] || '';
@@ -1072,6 +1309,8 @@ class Game {
     this.snapDef = true; this.sinceRecv = 99;
     this.penalty = !!spec.penalty; this.penaltyHold = this.penalty; this.restartKick = false;   // pênalti: goleiro na linha até o chute
     this.noOffside = !!spec.noOffside; this.corner = !!spec.corner; this.aerial = false; this.aerialUp = false;   // escanteio/pênalti: sem impedimento no 1º toque
+    this.cruzaAuto = !!spec.cruzamento; this.offAerial = null;
+    this.arremesso = !!spec.arremesso; this.lateralDireto = false;                     // lateral com as mãos (até a bola sair das mãos)                            // cruzamento p/ cabecear e falta na ponta: bola alta quando mira a área
     if (spec.keeper) { if (spec.keeper.x != null) this.keeper.x = spec.keeper.x; if (spec.keeper.y != null) this.keeper.y = spec.keeper.y; }
     if (spec.recv) { this.sinceRecv = 0.3; this.recvInfo = spec.recv; }                  // segunda bola: o 1º toque já é "de primeira"
     this.firstTouched = false; this.touchT = 0;               // limite para o primeiro toque (só na partida)
@@ -1242,9 +1481,35 @@ class Game {
       power: Util.clamp((L - CFG.MIN_PULL) / (CFG.MAX_PULL - CFG.MIN_PULL), 0, 1),
     };
   }
+  /**
+   * Cruzamento automático (lances com spec.cruzamento): com força, saindo do lado do campo (fora do corredor central), mirando a
+   * área (a linha passa perto da marca do pênalti) e NÃO o gol. Chute no gol e passe curto continuam normais.
+   */
+  cruzaAgora(shot) {
+    if (!this.cruzaAuto || !shot || shot.power <= 0.3) return false;
+    const b = this.ball, cx = CFG.FIELD.w / 2, px = cx, py = 9.5 * M;
+    if (Math.abs(b.x - cx) < 11 * M) return false;
+    const t = (px - b.x) * shot.ux + (py - b.y) * shot.uy; if (t <= 0) return false;
+    if (Math.abs((px - b.x) * shot.uy - (py - b.y) * shot.ux) > 7 * M) return false;
+    if (shot.uy < -0.05) { const xg = b.x + shot.ux * (-b.y / shot.uy); if (Math.abs(xg - cx) < CFG.GOAL.w / 2 + 1.5 * M) return false; }
+    return true;
+  }
+  /**
+   * LATERAL COM AS MÃOS: sem efeito e sem ponto de contato. O arrasto define a direção e a DISTÂNCIA até onde a bola cai
+   * (o alcance máximo cresce com a Força). A altura vem da distância:
+   *   - até 13 m: arremesso BAIXO, que chega na altura do pé/peito de quem está perto (dá para dominar);
+   *   - mais longe: arremesso ALTO em parábola, que desce na altura da cabeça (disputa de cabeça automática, como no escanteio).
+   */
+  buildThrow(shot) {
+    const g = CFG.GRAVITY, f = Util.lvl(this.attr.force), R = Util.lerp(4, Util.lerp(28, 38, f), shot.power) * M, CURTO = 13 * M;
+    const alto = R > CURTO, vz = alto ? Util.lerp(240, 330, Util.clamp((R - CURTO) / (20 * M), 0, 1)) : 150, T = 2 * vz / g;
+    const vh = R / T * (alto ? 1.12 : 0.8);                                             // alto: compensa o arrasto do ar; baixo: cai antes e rola
+    return { vx: shot.ux * vh, vy: shot.uy * vh, vz, spin: 0, lift: alto ? 0.7 : 0.25, curve: 0, alto };
+  }
   buildKick(shot, mx, my) {
+    if (this.arremesso) return this.buildThrow(shot);
     let lift = Util.clamp(my, 0, 1); const drive = Util.clamp(-my, 0, 1);
-    const cross = !!this.corner && shot.power > 0.3;            // escanteio com força: cruzamento no alto (efeito automático)
+    const cross = (!!this.corner || this.cruzaAgora(shot)) && shot.power > 0.3;   // escanteio/lateral/cruzamento com força: bola no alto (efeito automático)
     if (cross) lift = Math.max(lift, 0.65);
     const maxShot = 240 + 6.5 * this.attr.force;
     let speed = 100 + shot.power * (maxShot - 100);
@@ -1277,6 +1542,10 @@ class Game {
     this.aim = null;
     if (!shot || this.ball.state !== 'carried') return;
     this.decide = null;
+    if (this.arremesso) {                                         // lateral com as mãos: solta direto (não existe ponto de contato)
+      this.strike = { shot, mx: 0, my: 0, t: 0, p: 0, dir: 1, kind: 'still', first: false, slope: 1, n: 2, x0: 0.5, lim: 9 };
+      this.confirmStrike(); return;
+    }
     // COMO e DE ONDE a bola aparece na tela de contato depende de como ela chegou ao jogador:
     //  - bola parada: fica PARADA no centro ('still');
     //  - chute de primeira: passe rasteiro desliza (vindo do lado de onde veio o passe), passe alto passa voando ('fly')
@@ -1313,19 +1582,21 @@ class Game {
   }
   confirmStrike() {
     const s = this.strike; if (!s) return;
-    const kick = this.buildKick(s.shot, s.mx, s.my);
+    const cruz = this.cruzaAgora(s.shot), kick = this.buildKick(s.shot, s.mx, s.my);
     const b = this.ball, p = this.player;
     const rec = this.findReceiver(this.predict(kick));
     this.restartKick = !!this.setPiece || this.corner;          // bola parada: ninguém da equipe pode tocar de novo antes de goleiro/zagueiro
     this.penaltyHold = false;
     this.pass = rec ? { passer: p, receiver: rec.a, ip: rec.ip, offside: this.isOffside(rec.a, b.y), age: 0 } : null;
     b.state = 'free'; b.vx = kick.vx; b.vy = kick.vy; b.vz = kick.vz; b.spin = kick.spin;
-    this.aerial = !!this.corner && kick.vz > 0; this.aerialUp = false; this.corner = false; this.kicker = p; this.shooter = p;   // cruzamento do escanteio: a cabeçada é decidida no ar
+    this.aerial = this.arremesso ? !!kick.alto : (!!this.corner || cruz) && kick.vz > 0; this.aerialUp = false;
+    if (this.arremesso) { this.arremesso = false; this.lateralDireto = true; this.restartKick = true; }   // ninguém tocou ainda: não vale gol direto this.corner = false; this.kicker = p; this.shooter = p;   // cruzamento: a cabeçada é decidida no ar
+    this.offAerial = this.aerial && !this.noOffside ? new Set(this.attackers.filter(a => a !== p && this.isOffside(a, b.y))) : null;   // cruzamento em jogo: quem estava impedido no passe
     this.cooldown = CFG.PICKUP_COOLDOWN; this.postHit = false;
     this.path = [{ x: b.x, y: b.y }];
     p.facing = Math.atan2(s.shot.uy, s.shot.ux);
-    Visual.chute(p, s.mx);                                   // ETAPA 4B: dispara a animação do chute (só visual)
-    Som.chute(Math.hypot(kick.vx, kick.vy, kick.vz) / 950);   // som do chute/passe, mais forte quanto mais força
+    if (kick.alto != null) { Visual.lancar(p); Som.chute(0.15); }   // lateral: arremesso com as mãos
+    else { Visual.chute(p, s.mx); Som.chute(Math.hypot(kick.vx, kick.vy, kick.vz) / 950); }   // ETAPA 4B: animação e som do chute   // som do chute/passe, mais forte quanto mais força
     p.target = null; p.vx *= 0.4; p.vy *= 0.4;
     this.strike = null;
     if (this.penalty && s.shot.uy > 0) { this.finish('PÊNALTI PERDIDO!', '#fca5a5', 'No pênalti a bola não pode ir para trás', 2.0); return; }   // chute para trás (mesmo que pouco)
@@ -1741,8 +2012,15 @@ class Game {
     const k = this.keeper;
     if (b.state === 'carried' && !this.locked && k.stun <= 0 && Math.hypot(b.x - k.x, b.y - k.y) < 24) {
       if (Math.hypot(p.vx, p.vy) < D.STALL_SPEED || this.duel(this.attr.reflex * AI.KEEPER.NIVEL, this.attr.dribble * (p.fd || 1) * FolegoLance.duelo(p), 0.1)) {
-        b.state = 'held'; b.vx = b.vy = 0;
-        this.finish('DEFENDEU!', '#67e8f9', 'Goleiro saiu e encaixou', 1.8);
+        if (this.naArea(b.x, b.y)) {
+          b.state = 'held'; b.vx = b.vy = 0;
+          this.finish('DEFENDEU!', '#67e8f9', 'Goleiro saiu e encaixou', 1.8);
+        } else {                                                     // fora da área: sem as mãos, o goleiro afasta com o pé para o lado
+          const side = b.x < CFG.FIELD.w / 2 ? -1 : 1, ang = Math.atan2(Rnd.r(0.3, 0.8), side), sp = Rnd.r(380, 520);
+          b.state = 'free'; b.vx = Math.cos(ang) * sp; b.vy = Math.sin(ang) * sp; b.vz = Rnd.r(60, 140); b.spin = 0;
+          k.palmCd = 0.4; k.stun = 0.4; this.pass = null; this.cooldown = Math.max(this.cooldown, 0.3); p.vx *= 0.3; p.vy *= 0.3;
+          this.toast = { text: 'GOLEIRO AFASTOU COM O PÉ!', t: 1.0, color: '#67e8f9' };
+        }
       } else {
         k.stun = 1.0;
         this.toast = { text: 'DRIBLE NO GOLEIRO!', t: 1.0, color: '#86efac' };
@@ -1821,9 +2099,32 @@ class Game {
     return { x: tx, y: ty, v };
   }
 
+  /** Ponto (x, y) dentro da grande área do goleiro adversário (gol em y = 0)? Fora dela o goleiro não pode usar as mãos. */
+  naArea(x, y) { return y <= CFG.BOX.h && Math.abs(x - CFG.FIELD.w / 2) <= CFG.BOX.w / 2; }
+  /**
+   * Goleiro FORA DA ÁREA: não pode usar as mãos. A bola que bate no corpo dele REBATE (reflexão com perda de força e um
+   * pequeno desvio) e o lance continua: pode sobrar para atacante, zagueiro ou o próprio goleiro.
+   */
+  rebaterNoGoleiro(k) {
+    const b = this.ball, min = CFG.PLAYER_R + CFG.BALL_R;
+    let nx = b.x - k.x, ny = b.y - k.y, d = Math.hypot(nx, ny);
+    if (d < 0.01) { nx = 0; ny = 1; d = 1; }
+    nx /= d; ny /= d;
+    const vn = b.vx * nx + b.vy * ny;
+    if (vn < 0) { b.vx -= 1.45 * vn * nx; b.vy -= 1.45 * vn * ny; }                    // reflete a componente que vinha contra o corpo
+    const ang = Math.atan2(b.vy, b.vx) + Rnd.r(-0.3, 0.3), sp = Math.hypot(b.vx, b.vy) * Rnd.r(0.4, 0.55);
+    b.vx = Math.cos(ang) * sp; b.vy = Math.sin(ang) * sp; b.vz = Math.max(0, b.vz) * 0.5 + Rnd.r(0, 40); b.spin = 0;
+    b.x = k.x + nx * (min + 1); b.y = k.y + ny * (min + 1);
+    k.palmCd = 0.35; this.pass = null; this.cooldown = Math.max(this.cooldown, 0.12);
+    this.toast = { text: 'REBATEU NO GOLEIRO!', t: 0.9, color: '#67e8f9' };
+  }
   collideKeeper() {
     const k = this.keeper, b = this.ball, K = AI.KEEPER;
     if (this.locked || b.state !== 'free' || k.palmCd > 0) return;   // acabou de espalmar: não toca de novo na mesma bola
+    if (!this.naArea(b.x, b.y)) {                                     // fora da área: sem mãos, só o corpo (até a altura do peito)
+      if (Math.hypot(b.x - k.x, b.y - k.y) < CFG.PLAYER_R + CFG.BALL_R && b.z <= AI.DEF.BLOCK_Z) this.rebaterNoGoleiro(k);
+      return;
+    }
     const diving = k.state === 'dive';
     const reach = (diving ? K.REACH_DIVE : K.REACH) * (this.penalty ? 0.85 : 1) + CFG.BALL_R;   // pênalti: alcance um pouco menor
     const maxZ = diving ? CFG.GOAL_H * 1.1 : K.SAVE_Z;
@@ -1945,12 +2246,17 @@ class Game {
       if (dd <= H.REACH) cand.push({ o: d, kind: 'def', w: (0.35 + 0.75 * mark) * prox(dd) * (d.markRef ? 1.1 : 1) });
     }
     const k = this.keeper, dk = Math.hypot(k.x - b.x, k.y - b.y);
-    if (dk <= H.REACH * 1.4 && b.z <= H.Z_MAX + 6 && k.palmCd <= 0) cand.push({ o: k, kind: 'gk', w: (0.3 + 0.7 * refl) * prox(dk / 1.4) });
+    if (dk <= H.REACH * 1.4 && b.z <= H.Z_MAX + 6 && k.palmCd <= 0 && this.naArea(b.x, b.y)) cand.push({ o: k, kind: 'gk', w: (0.3 + 0.7 * refl) * prox(dk / 1.4) });
     if (!cand.length) return;
     let r = Math.random() * cand.reduce((s, c) => s + c.w, 0), win = cand[cand.length - 1];
     for (const c of cand) { r -= c.w; if (r <= 0) { win = c; break; } }
     this.aerial = false; this.noOffside = false; this.restartKick = false; this.pass = null; this.cooldown = Math.max(this.cooldown, 0.3);
     const o = win.o, cx = CFG.FIELD.w / 2, G = CFG.GOAL;
+    if (win.kind === 'att' && this.offAerial && this.offAerial.has(o)) {                 // cabeceador estava impedido na hora do cruzamento
+      this.offAerial = null; this.offsideP = o; b.vx = b.vy = b.vz = b.spin = 0; b.z = 0;
+      this.finish('IMPEDIMENTO!', '#fbbf24', 'Cabeceador adiantado na hora do cruzamento', 2.0); Som.apito('curto'); return;
+    }
+    this.offAerial = null;
     if (win.kind === 'gk') {
       b.state = 'held'; b.vx = b.vy = b.vz = b.spin = 0; b.z = 0;
       this.finish('DEFENDEU!', '#67e8f9', 'Goleiro saiu e pegou o cruzamento', 1.8);
@@ -2019,6 +2325,10 @@ class Game {
       if (b.z > CFG.GOAL_H && !(this.postHit && b.z <= CFG.GOAL_H * 1.6)) {
         this.out = true; this.pass = null;
         this.msg = { text: 'PARA FORA!', color: '#ffffff', sub: 'Por cima do travessão', age: 0 };
+        this.resetTimer = 1.4;
+      } else if (this.lateralDireto && this.restartKick) {          // gol direto da cobrança de lateral (ninguém tocou) não vale
+        this.out = true; this.pass = null;
+        this.msg = { text: 'PARA FORA!', color: '#ffffff', sub: 'Não vale gol direto de lateral', age: 0 };
         this.resetTimer = 1.4;
       } else {
         this.scored = true; this.pass = null;

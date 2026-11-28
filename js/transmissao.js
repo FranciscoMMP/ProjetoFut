@@ -104,6 +104,11 @@ const Narracao = {
     escanteio: 'ESCANTEIO a favor! {C} vai à bola, área cheia. É a sua chance!', penalti: 'PÊNALTI! {C} pega a bola. É a sua chance!', um_x_um: 'CARA A CARA com {og}! {C} está sozinho. É a sua chance!',
     costas: '{C} recebe nas costas da zaga! É a sua chance!', roubada: '{C} rouba a bola no ataque! É a sua chance!', lado: '{C} acumula pelo lado com os companheiros! É a sua chance!',
     fundo: '{C} chega à linha de fundo! É a sua chance!', rebote: 'A bola sobrou para {C} na entrada da área! É a sua chance!', bloco: '{C} tem espaço para o chute de fora! É a sua chance!',
+    isolado: '{C} fica no mano a mano com o lateral na ponta! É a sua chance!', diagonal: '{C} conduz e o companheiro ataca o espaço em diagonal! É a sua chance!',
+    longe: 'A bola rola para {C}, livre na meia-lua! É a sua chance!', cabeca: '{C} vai cruzar, o centroavante está na área! É a sua chance!',
+    pressao: '{U} pressiona e {C} rouba no meio-campo! É a sua chance!', goleiro: '{og} saiu do gol e a bola sobrou para {C}! É a sua chance!',
+    arremesso: 'Lateral perto da área: {C} vai cobrar na área! É a sua chance!', curto: 'Escanteio curto ensaiado: {C} vai à bola! É a sua chance!',
+    faltaponta: 'Falta pela ponta! {C} vai levantar na área. É a sua chance!',
   },
   /** Resultado do lance jogado: chave = mensagem do jogo. */
   RES: {
@@ -353,12 +358,20 @@ class TransmissaoMetodos {
     const r = 0.155 * Math.exp(2.0 * (us - opp) / 100) * (withRhythm && this.match ? this.match.rhythm : 1);
     return Util.clamp(r, 0.03, 0.55);
   }
+  /** Tipo do próximo lance no plano (pesos base: o placar ainda não existe). Pênalti no máximo um por partida. */
   nextType() {
     if (this.forceScn !== 'rand') return this.forceScn;
-    const T = Scenarios.TYPES, w = T.map(k => k === this.lastType || (k === 'penalti' && this.penPlanned) ? 0 : Scenarios.WEIGHTS[k]);
-    let r = Math.random() * w.reduce((s, v) => s + v, 0);
-    for (let i = 0; i < T.length; i++) { r -= w[i]; if (r <= 0) return T[i]; }
-    return T[0];
+    return Scenarios.sortear(null, this.lastType, this.penPlanned);
+  }
+  /**
+   * Na hora do lance, o tipo é sorteado de novo com o CONTEXTO da partida (placar, minuto e postura: Scenarios.pesos).
+   * O pênalti planejado continua pênalti, e o sorteio na hora nunca cria um pênalti novo (a frequência fica a mesma).
+   */
+  tipoNaHora(cur, min) {
+    if (this.forceScn !== 'rand') return this.forceScn;
+    if (cur.type === 'penalti') return cur.type;
+    const m = this.match, ctx = { saldo: m.home - m.away, min, postura: Tactics.postura };
+    return Scenarios.sortear(ctx, this.lastType, true);
   }
 
   /* ----- Interface da transmissão ----- */
@@ -524,7 +537,7 @@ class TransmissaoMetodos {
   /* ----- Lance decisivo: aviso na narração -> campo em tela cheia -> resultado volta para o feed ----- */
   promptPlay(min) {
     const m = this.match; m.cur = m.plan.shift(); m.cur.min = min;
-    m.cur.type = this.forceScn !== 'rand' ? this.forceScn : m.cur.type; m.cur.spec = Scenarios.make(m.cur.type);   // o lance já nasce aqui: o aviso cita quem está com a bola
+    m.cur.type = this.tipoNaHora(m.cur, min); m.cur.spec = Scenarios.make(m.cur.type);   // o lance já nasce aqui: o aviso cita quem está com a bola
     const car = m.cur.spec.attackers[0], real = this.lineups ? Elenco.porSlot(this.lineups.us, car.pos, car.slot && car.slot.x) : null;
     m.phase = 'prompt'; m.pauseT = CFG.BC_AUTO_DELAY;
     m.promptEl = this.feed(min, 'chance', '', this.cx.fmt(Narracao.HEAD[m.cur.type] || 'É a sua chance!', { C: real ? real.nomeFalado : 'o camisa ' + car.num }), true);
@@ -615,7 +628,8 @@ class TransmissaoMetodos {
     const a = this.attr, atk = a.force * 0.2 + a.curve * 0.2 + a.speed * 0.2 + a.dribble * 0.25 + a.pos * 0.15;
     const def = a.mark * 0.6 + a.reflex * 0.4;
     const base = { contra: 0.26, entrada: 0.14, parada: 0.13, ponta: 0.17, fechada: 0.08, posicional: 0.12, escanteio: 0.1, penalti: 0.76, um_x_um: 0.45,
-                   costas: 0.22, roubada: 0.2, lado: 0.22, fundo: 0.15, rebote: 0.12, bloco: 0.1 }[type] || 0.12;
+                   costas: 0.22, roubada: 0.2, lado: 0.22, fundo: 0.15, rebote: 0.12, bloco: 0.1, isolado: 0.15, diagonal: 0.17, longe: 0.1,
+                   cabeca: 0.14, pressao: 0.2, goleiro: 0.38, arremesso: 0.09, curto: 0.1, faltaponta: 0.11 }[type] || 0.12;
     return Util.clamp(base * Math.exp(2.2 * (atk - def) / 100), 0.02, 0.85);
   }
   /** Botão "Simular resto da partida": resolve o que falta (lances por fórmula) e vai direto ao resumo. */
@@ -624,6 +638,7 @@ class TransmissaoMetodos {
     if (this.match.over) this.newMatch();
     const m = this.match; m.simulated = true; m.after = null;
     const resolve = (cur, min) => {
+      if (cur !== m.cur) cur.type = this.tipoNaHora(cur, min);                       // o lance já anunciado mantém o tipo
       const st = m.stats[cur.type] || (m.stats[cur.type] = { plays: 0, goals: 0 }); st.plays++; m.plays++;
       if (Math.random() < this.estimateChance(cur.type)) {
         const S = this.lineups ? Sim.autor(this.lineups.us) : null;

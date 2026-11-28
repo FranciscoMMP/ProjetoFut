@@ -186,6 +186,11 @@ const Sprites = {
       feet[1 - kl].f = -0.7; feet[1 - kl].z = 0; feet[1 - kl].r = -sk * (HR + 1.0);
       hands[kl] = { f: -2.4 - (fr >= 3 ? 0.8 : 0), r: sk * (SR + 0.8), z: 9.8 };      // braço do lado da perna vai para trás
       hands[1 - kl] = { f: 2.8, r: -sk * (SR + 1.6), z: 11.4 };                         // o outro abre para a frente (equilíbrio)
+    } else if (A.kind === 'arremesso') {               // LATERAL com as mãos: 0 = bola segura acima da cabeça; 1-4 = arremesso
+      const fr = A.frame, HF = [-0.8, -2.6, -0.6, 2.6, 4.2], HZ = [20.5, 19.6, 21.2, 18.6, 14.8];
+      lean = [-0.3, -1.1, -0.4, 1.0, 1.6][fr]; hipZ = 8.2;
+      feet[0].f = -1.6; feet[1].f = 1.6;                                             // pés afastados, um à frente do outro
+      for (let i = 0; i < 2; i++) hands[i] = { f: HF[fr], r: (i ? 1 : -1) * 1.9, z: HZ[fr] };   // as duas mãos juntas na bola
     } else if (A.kind === 'mergulho') {                // goleiro esticado na horizontal (6 níveis de inclinação)
       pitch = [0.15, 0.45, 0.8, 1.1, 1.3, 1.42][A.frame];
       for (let i = 0; i < 2; i++) {
@@ -339,6 +344,8 @@ const Visual = {
   /** Pulo curto (cabeçada): sobe e desce em ~0,45 s. Só visual. */
   salto(e) { if (e && e.estadoAnim) e.estadoAnim.salto = { t: 0, dur: 0.45 }; },
   chute(e, curva = 0) { if (e && e.estadoAnim) e.estadoAnim.kick = { t: 0, dur: 0.26, lado: curva < 0 ? -1 : 1 }; },
+  /** Arremesso do LATERAL com as mãos (~300 ms): braços vão para trás da cabeça e lançam para a frente. Só visual. */
+  lancar(e) { if (e && e.estadoAnim) e.estadoAnim.lanc = { t: 0, dur: 0.3 }; },
 
   /**
    * Atualiza a pose de um jogador a cada quadro de DESENHO (dt = tempo real, sim = tempo simulado, que respeita a câmera lenta).
@@ -353,11 +360,14 @@ const Visual = {
     A.t += dt;
     if (A.kick) { A.kick.t += dt; if (A.kick.t >= A.kick.dur) A.kick = null; }
     if (A.salto) { A.salto.t += dt; if (A.salto.t >= A.salto.dur) A.salto = null; }
+    if (A.lanc) { A.lanc.t += dt; if (A.lanc.t >= A.lanc.dur) A.lanc = null; }
+    const segura = e === game.player && game.arremesso && game.ball.state === 'carried';   // cobrador do lateral com a bola nas mãos
 
     // --- qual animação? ---
     const mov = sp > 40 || (sp > 22 && (A.kind === 'corrida' || A.kind === 'lateral'));
     let kind = 'parado';
-    if (A.kick) kind = 'chute';
+    if (A.lanc || segura) kind = 'arremesso';
+    else if (A.kick) kind = 'chute';
     else if (gk && e.anim > 0.03) kind = 'mergulho';
     else if (mov) kind = gk ? 'lateral' : 'corrida';
 
@@ -379,6 +389,8 @@ const Visual = {
       if (kind === 'lateral') { const d = vx * -Math.sin(A.yaw) + vy * Math.cos(A.yaw); A.lat = d < 0 ? -1 : 1; }
     } else if (kind === 'chute') {
       A.frame = Math.min(5, Math.floor(A.kick.t / A.kick.dur * 6)); A.lat = A.kick.lado;
+    } else if (kind === 'arremesso') {
+      A.frame = A.lanc ? 1 + Math.min(3, Math.floor(A.lanc.t / A.lanc.dur * 4)) : 0;
     } else if (kind === 'mergulho') {
       A.frame = Math.min(5, Math.round(e.anim * 5));
     } else {
@@ -801,7 +813,7 @@ class Renderer {
     ctx.font = '600 12px "Chakra Petch",system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = 'rgba(255,255,255,.72)';
     const wait = game.mode === 'match' && !game.firstTouched && !game.locked;
-    const hint = wait ? 'LANCE PARADO: toque no gramado ou arraste da bola para começar' : game.setPiece ? 'BOLA PARADA: arraste da bola para trás para chutar ou passar' : 'Toque no gramado: correr  •  Arraste da bola para trás: chute ou passe (mire num companheiro)';
+    const hint = wait ? 'LANCE PARADO: toque no gramado ou arraste da bola para começar' : game.arremesso ? 'LATERAL: arraste da bola para trás e solte. Curto = bola baixa no pé; longo = bola alta para cabecear' : game.setPiece ? 'BOLA PARADA: arraste da bola para trás para chutar ou passar' : 'Toque no gramado: correr  •  Arraste da bola para trás: chute ou passe (mire num companheiro)';
     ctx.fillText(game.strike ? '' : hint, this.w / 2, this.h - 10, this.w - 16);
 
     if (!game.strike && !game.trans) this.drawOffscreenArrows(ctx, game);
@@ -984,6 +996,11 @@ class Renderer {
    */
   ballVisual(game, dt) {
     const b = game.ball, p = game.player, v = this.vb;
+    if (b.state === 'carried' && game.arremesso) {                          // lateral: bola nas mãos, acima da cabeça (sem sombra)
+      const f = p.facing, tx = p.x - Math.cos(f) * 1.2, ty = p.y + Sprites.PES_DY - 31 - Math.sin(f) * 0.9;
+      v.x = tx; v.y = ty; v.off = { x: tx - b.x, y: ty - b.y };
+      return { x: tx, y: ty, z: 0, rot: b.rot, semSombra: true };
+    }
     if (b.state === 'carried') {
       const f = p.facing;
       // posição FIXA em relação ao boneco (sem balançar): um pouco à frente e levemente ao lado de um pé
@@ -1060,8 +1077,10 @@ class Renderer {
 
   drawBall(ctx, b) {
     const R = CFG.BALL_R, z = b.z || 0;
-    ctx.fillStyle = `rgba(0,0,0,${Math.max(0.1, 0.3 - z / 220)})`;
-    ctx.beginPath(); ctx.ellipse(b.x + 1, b.y + 1.5, R, R * 0.85, 0, 0, Math.PI * 2); ctx.fill();
+    if (!b.semSombra) {                                                     // bola nas mãos do lateral: sem sombra no chão
+      ctx.fillStyle = `rgba(0,0,0,${Math.max(0.1, 0.3 - z / 220)})`;
+      ctx.beginPath(); ctx.ellipse(b.x + 1, b.y + 1.5, R, R * 0.85, 0, 0, Math.PI * 2); ctx.fill();
+    }
     const by = b.y - z * 0.35, r = R * (1 + z / 60);
     ctx.fillStyle = '#fff'; ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(b.x, by, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();

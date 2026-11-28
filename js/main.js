@@ -65,7 +65,7 @@ const SCN_DESC = {
   ponta: 'Bola na ponta: cruze para os atacantes que entram na área.',
   fechada: 'Retranca: 5 zagueiros dentro da área contra 2 ou 3 atacantes.',
   posicional: 'Muita gente (5 a 7 por lado): tenha paciência, troque passes e ache a brecha.',
-  escanteio: 'Área cheia (4-6 atacantes x 7-9 defensores). Arraste forte: o cruzamento sai no alto e a cabeçada é automática. Às vezes é curto.',
+  escanteio: 'Área cheia (4-6 atacantes x 7-9 defensores). Arraste forte: o cruzamento sai no alto e a cabeçada é automática.',
   penalti: 'Só você e o goleiro: arraste da bola para escolher o canto e a força.',
   um_x_um: 'Você escapou da marcação: drible o goleiro, toque para o apoio ou chute.',
   costas: 'Defesa com a linha alta: lance em profundidade, mas cuidado com o impedimento.',
@@ -74,6 +74,15 @@ const SCN_DESC = {
   fundo: 'Ponta na linha de fundo: passe rasteiro para trás, para quem vem de frente para o gol.',
   rebote: 'A bola sobrou na entrada da área: chute de primeira ou toque rápido.',
   bloco: 'Defesa recuada deixa espaço na entrada da área: chute de fora ou procure a brecha.',
+  isolado: 'Ponta no mano a mano com o lateral; centroavante na área e um meia de apoio chegando.',
+  diagonal: 'Meia conduz contra uma linha de 4 compacta: os companheiros atacam o espaço entre zagueiro e lateral em diagonal.',
+  longe: 'A bola chega rolando na meia-lua, sem marcação: bata de primeira ou domine e procure o passe.',
+  cabeca: 'Ponta aberto perto da área: arraste forte para a área, a bola vai alta e a cabeçada é automática (vale impedimento).',
+  pressao: 'O rival perdeu a bola na saída, no meio-campo, com o time esticado: ataque antes da recomposição.',
+  goleiro: 'O goleiro saiu da área e a bola sobrou: ele volta correndo, tente a cobertura ou conduza.',
+  arremesso: 'Lateral com as mãos perto da área: só direção e força. Arrasto curto = bola baixa no pé; longo = bola alta na área (cabeçada automática).',
+  curto: 'Escanteio curto ensaiado: dois companheiros perto da bandeirinha contra um rival saindo para pressionar.',
+  faltaponta: 'Falta pelo lado, perto da linha de fundo, barreira de 2: levante na área (cabeçada automática) ou bata no gol.',
 };
 // Formações táticas (valem a partir do próximo lance)
 for (const [id, key] of [['s-fa', 'us'], ['s-fd', 'opp']]) {
